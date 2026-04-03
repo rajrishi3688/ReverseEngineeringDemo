@@ -18,6 +18,8 @@ st.set_page_config(
 )
 
 MODEL_OPTIONS = [
+    "gpt-5.4-mini",
+    "gpt-5.4",
     "gpt-5-mini",
     "gpt-5",
     "gpt-4o-mini",
