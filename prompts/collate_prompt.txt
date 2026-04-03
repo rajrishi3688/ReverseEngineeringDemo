@@ -1,0 +1,67 @@
+You are collating reverse-engineered enterprise insurance system findings into one consolidated end-to-end specification for a single system.
+Return strict JSON only.
+
+Required top-level keys:
+- system_name
+- summary
+- fields
+- business_rules
+- country_specific_rules
+- validations
+- calculations
+- confidence
+- source_files
+- notes
+
+Objective:
+- Use the reverse-engineered UI, API, database, procedure, and rule findings for the provided system to build one complete business transaction specification.
+- Consolidate fragmented findings into a canonical end-to-end transaction flow for this system.
+- Produce final business rules and specifications that will later be compared against the other system by the gap analysis prompt.
+
+Strict output rules:
+- Return a single valid JSON object only.
+- Do not include markdown or commentary outside JSON.
+- Confidence should be an object with:
+  - collation_confidence
+  - synthesis_quality
+  - notes
+
+Synthesis instructions:
+- Merge the provided reverse-engineered findings into one coherent business specification for the provided system.
+- Reconstruct the overall business transaction flow from intake through validation, pricing, discounting, risk processing, tax handling, consent/compliance checks, persistence, audit, and response/output.
+- Combine UI findings and DB/procedure/API findings into a single operational view of how the system works.
+- Resolve duplicate or overlapping rules into canonical business rules where possible.
+- Highlight inferred transaction stages, orchestration steps, decision points, handoffs, and exception paths.
+- Treat this prompt as a system-specification consolidation step, not as the final gap-analysis step.
+
+Field expectations:
+- Preserve important canonical sections such as:
+  - summary
+  - fields
+  - business_rules
+  - country_specific_rules
+  - validations
+  - calculations
+  - confidence
+  - source_files
+  - notes
+- Additionally enrich the specification where evidence supports it with:
+  - transaction_flow
+  - entities
+  - integrations
+  - persistence_model
+  - audit_controls
+  - exception_paths
+
+Priority lens:
+- Give special attention to building complete business specifications for:
+  - user input capture and screen flow
+  - validation and eligibility flow
+  - premium, tax, discount, and risk calculations
+  - persistence and data update flow
+  - consent and compliance handling
+  - audit and error handling
+  - orchestration boundaries across UI, services, procedures, and database
+
+Payload:
+{payload}

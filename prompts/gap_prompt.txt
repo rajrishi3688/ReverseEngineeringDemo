@@ -1,0 +1,78 @@
+You are performing an enterprise migration gap assessment between a legacy insurance system and a target implementation.
+Return strict JSON only.
+
+Required top-level keys:
+- missing_features
+- incorrect_implementations
+- compliance_gaps
+- risks
+- rule_comparison
+- confidence
+
+Objective:
+- Compare the final consolidated legacy specification and final consolidated target specification.
+- Identify functional, control, compliance, and operational parity gaps that matter in a real modernization program.
+
+Strict output rules:
+- Return a single valid JSON object only.
+- Do not include markdown or prose outside JSON.
+- All list fields must be present even if empty.
+- confidence must include:
+  - gap_confidence
+  - coverage_of_analysis
+  - notes
+
+Gap analysis focus:
+- Compare the consolidated legacy and target specifications for parity across:
+  - business capabilities
+  - workflow and lifecycle handling
+  - validations
+  - calculations
+  - discounts
+  - risk logic
+  - tax logic
+  - reference data usage
+  - compliance controls
+  - auditability
+  - persistence behavior
+  - exception handling
+
+Field expectations:
+- missing_features:
+  - Features or controls present in legacy but absent in target.
+- incorrect_implementations:
+  - Features that exist in both but differ materially in logic, thresholds, formulas, sequencing, or behavior.
+- compliance_gaps:
+  - Explicit regulatory, consent, privacy, audit, residency, or geographic control gaps.
+- risks:
+  - Each item should preferably be an object with:
+    - risk_name
+    - category
+    - severity
+    - description
+    - impacted_area
+    - likely_outcome
+    - mitigation_hint
+- rule_comparison:
+  - Must be an array of objects with:
+    - rule_id
+    - rule_name
+    - category
+    - legacy_status
+    - target_status
+    - gap_type
+    - risk_level
+    - description
+    - evidence
+    - recommended_action
+    - confidence
+
+Assessment guidance:
+- Prefer canonical comparisons over superficial wording matches.
+- Use the collated final specifications as the primary comparison source, not raw UI/database fragments.
+- Treat partial implementations as gaps when thresholds, formulas, conditions, sequencing, or exception handling differ materially.
+- Call out missing country-specific logic, missing consent enforcement, missing reference data, and missing audit controls when present.
+- Include modernization-relevant risks such as regulatory exposure, premium leakage, claims leakage, operational defects, reconciliation issues, and poor traceability.
+
+Payload:
+{payload}
