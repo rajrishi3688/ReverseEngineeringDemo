@@ -36,24 +36,76 @@ outputs/cache/
 
 ## Setup
 
-1. Create and activate a virtual environment.
-2. Install dependencies:
+1. Clone the repository and open a terminal in the project root.
+2. Create a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+3. Activate the virtual environment.
+
+On Windows PowerShell:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+On macOS/Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+4. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Optionally set your OpenAI key:
+5. Optionally configure an LLM provider.
 
-```bash
-set OPENAI_API_KEY=your_key_here
+For Windows PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY="your_key_here"
 ```
 
-4. Run the app:
+Optional model override:
+
+```powershell
+$env:OPENAI_MODEL="gpt-5.4-mini"
+```
+
+If you want to use Anthropic instead:
+
+```powershell
+$env:ANTHROPIC_API_KEY="your_key_here"
+```
+
+If no API key is set, the app still runs using deterministic mock outputs for demo purposes.
+
+## Run The App
+
+Start Streamlit from the project root:
 
 ```bash
 streamlit run app.py
 ```
+
+After Streamlit starts, open the local URL shown in the terminal, usually:
+
+```text
+http://localhost:8501
+```
+
+## Quick Start
+
+1. Run `streamlit run app.py`.
+2. Leave the default `sample_inputs/legacy` and `sample_inputs/target` paths in place for a demo run.
+3. Choose a model in the sidebar if needed.
+4. Click `Run Modernization Analysis`.
+5. Review the generated reverse-engineering, collation, and gap-analysis results in the UI.
 
 ## Usage
 
