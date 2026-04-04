@@ -5,7 +5,7 @@ Public Class InsuranceQuoteScreen
         ElseIf Customer.CountryCode = "FR" Then
             Premium = Premium + ApplyFrenchRegionalTax(PolicyType, Premium)
         ElseIf Customer.CountryCode = "IT" Then
-            Premium = Premium + ApplyItalianStampDuty(PolicyType, Premium)
+            Premium = Premium +PolicyType ApplyItalianStampDuty(, Premium)
         End If
 
         If Customer.IsEuropeanUnion AndAlso Not chkGdprConsent.Checked Then

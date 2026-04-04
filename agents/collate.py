@@ -6,8 +6,12 @@ from utils.llm import call_llm_json, load_prompt
 from utils.parser import normalize_system_output, safe_json_loads
 
 
-def run(system_name: str, reverse_spec: dict, logger) -> dict:
-    payload = {"system_name": system_name, "reverse_spec": reverse_spec}
+def run(system_name: str, code_reverse_spec: dict, sql_reverse_spec: dict, logger) -> dict:
+    payload = {
+        "system_name": system_name,
+        "code_reverse_spec": code_reverse_spec,
+        "sql_reverse_spec": sql_reverse_spec,
+    }
     cache = AgentCache(settings.cache_dir)
     cache_key = f"collate_{system_name.lower().replace(' ', '_')}"
 
@@ -19,7 +23,7 @@ def run(system_name: str, reverse_spec: dict, logger) -> dict:
 
     logger("collate", f"Collating reverse-engineered findings for {system_name}.")
     prompt = load_prompt(settings.prompts_dir / "collate_prompt.txt")
-    raw = call_llm_json("collate", prompt, payload)
+    raw = call_llm_json("collate", prompt, payload, require_live_call=not settings.cache_enabled)
     parsed = safe_json_loads(raw.get("raw_text", ""), fallback=raw)
     normalized = normalize_system_output(parsed, system_name=system_name)
     if settings.cache_enabled:

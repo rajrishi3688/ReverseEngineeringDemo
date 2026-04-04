@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable
 
 
 SUPPORTED_SUFFIXES = {
@@ -58,17 +59,31 @@ def read_text_file(path: Path, max_chars: int) -> dict:
         }
 
 
-def read_folder(folder_path: str | Path, max_files: int, max_chars: int) -> dict:
+def read_folder(
+    folder_path: str | Path,
+    max_files: int,
+    max_chars: int,
+    include_suffixes: Iterable[str] | None = None,
+    exclude_suffixes: Iterable[str] | None = None,
+) -> dict:
     folder = Path(folder_path)
     if not folder.exists():
         return {"folder": str(folder), "files": [], "errors": [f"Folder not found: {folder}"]}
     if not folder.is_dir():
         return {"folder": str(folder), "files": [], "errors": [f"Not a directory: {folder}"]}
 
+    include_set = {suffix.lower() for suffix in include_suffixes} if include_suffixes else None
+    exclude_set = {suffix.lower() for suffix in exclude_suffixes} if exclude_suffixes else set()
+
     files = []
     errors: list[str] = []
     candidate_paths = sorted(
-        path for path in folder.rglob("*") if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+        path
+        for path in folder.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in SUPPORTED_SUFFIXES
+        and (include_set is None or path.suffix.lower() in include_set)
+        and path.suffix.lower() not in exclude_set
     )
 
     for path in candidate_paths[:max_files]:

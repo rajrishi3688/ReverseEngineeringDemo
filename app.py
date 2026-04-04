@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any
 
 import pandas as pd
@@ -214,11 +215,43 @@ def normalize_for_table(items: Any) -> pd.DataFrame:
     return pd.DataFrame({"value": [str(items)]})
 
 
+def sanitize_dataframe_for_display(dataframe: pd.DataFrame) -> pd.DataFrame:
+    if dataframe.empty:
+        return dataframe
+
+    def normalize_cell(value: Any) -> Any:
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value)
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return value
+
+    return dataframe.map(normalize_cell)
+
+
+def build_nested_rows(items: list[dict], nested_key: str, parent_keys: list[str], child_prefix: str = "") -> list[dict]:
+    rows: list[dict] = []
+    for item in items:
+        nested_items = item.get(nested_key, [])
+        if not isinstance(nested_items, list):
+            continue
+        for nested_item in nested_items:
+            row = {key: item.get(key) for key in parent_keys}
+            if isinstance(nested_item, dict):
+                for key, value in nested_item.items():
+                    row[f"{child_prefix}{key}" if child_prefix else key] = value
+            else:
+                row[f"{child_prefix}value" if child_prefix else "value"] = nested_item
+            rows.append(row)
+    return rows
+
+
 def render_table(items: Any, empty_message: str = "No data available.") -> None:
     dataframe = normalize_for_table(items)
     if dataframe.empty:
         st.info(empty_message)
         return
+    dataframe = sanitize_dataframe_for_display(dataframe)
     st.dataframe(dataframe, use_container_width=True, hide_index=True)
 
 
@@ -239,9 +272,9 @@ def render_notes(items: list[Any]) -> None:
 
 def render_phase_progress(logs: list[dict]) -> None:
     phase_map = {
-        "reverse_legacy": "Legacy reverse engineering",
+        "reverse_legacy": "Legacy code and SQL reverse engineering",
         "collate_legacy": "Legacy collation",
-        "reverse_target": "Target reverse engineering",
+        "reverse_target": "Target code and SQL reverse engineering",
         "collate_target": "Target collation",
         "gap": "Gap analysis",
     }
@@ -279,8 +312,17 @@ def render_spec(spec: dict, title: str) -> None:
     col4.metric("Calculations", len(spec.get("calculations", [])))
     st.markdown("</div>", unsafe_allow_html=True)
 
-    summary_tab, fields_tab, rules_tab, country_tab, validations_tab, calculations_tab, notes_tab = st.tabs(
-        ["Summary", "Fields", "Business Rules", "Country Rules", "Validations", "Calculations", "Notes"]
+    (
+        summary_tab,
+        fields_tab,
+        rules_tab,
+        country_tab,
+        validations_tab,
+        calculations_tab,
+        structure_tab,
+        notes_tab,
+    ) = st.tabs(
+        ["Summary", "Fields", "Business Rules", "Country Rules", "Validations", "Calculations", "Structure", "Notes"]
     )
 
     with summary_tab:
@@ -305,6 +347,44 @@ def render_spec(spec: dict, title: str) -> None:
 
     with calculations_tab:
         render_table(spec.get("calculations", []), "No calculations extracted.")
+
+    with structure_tab:
+        st.markdown("**UI Components**")
+        render_table(spec.get("ui_components", []), "No UI components extracted.")
+        ui_control_rows = build_nested_rows(
+            spec.get("ui_components", []),
+            "controls",
+            ["component_name", "component_type", "screen_or_route"],
+            child_prefix="control_",
+        )
+        st.markdown("**UI Controls**")
+        render_table(ui_control_rows, "No UI controls extracted.")
+        st.markdown("**Classes**")
+        render_table(spec.get("classes", []), "No classes extracted.")
+        st.markdown("**Methods**")
+        render_table(spec.get("methods", []), "No methods extracted.")
+        method_parameter_rows = build_nested_rows(spec.get("methods", []), "parameters", ["owner", "method_name"], child_prefix="param_")
+        st.markdown("**Method Parameters**")
+        render_table(method_parameter_rows, "No method parameters extracted.")
+        st.markdown("**Procedures**")
+        render_table(spec.get("procedures", []), "No procedures extracted.")
+        procedure_parameter_rows = build_nested_rows(
+            spec.get("procedures", []),
+            "parameters",
+            ["procedure_name", "procedure_type"],
+            child_prefix="param_",
+        )
+        st.markdown("**Procedure Parameters**")
+        render_table(procedure_parameter_rows, "No procedure parameters extracted.")
+        st.markdown("**Procedure Dependencies**")
+        render_table(spec.get("procedure_dependencies", []), "No procedure dependencies extracted.")
+        st.markdown("**Table Dependencies**")
+        render_table(spec.get("table_dependencies", []), "No table dependencies extracted.")
+        st.markdown("**API Endpoints**")
+        render_table(spec.get("api_endpoints", []), "No API endpoints extracted.")
+        if spec.get("source_breakdown"):
+            st.markdown("**Source Breakdown**")
+            render_table(spec.get("source_breakdown", {}), "No source breakdown available.")
 
     with notes_tab:
         render_notes(spec.get("notes", []))
@@ -406,22 +486,91 @@ def render_logs(logs: list[dict]) -> None:
         st.dataframe(log_df, use_container_width=True, hide_index=True)
 
 
+def render_flow_map(flow_map: dict, title: str) -> None:
+    st.subheader(title)
+    if not flow_map:
+        st.info("No flow map available.")
+        return
+
+    nodes = flow_map.get("nodes", [])
+    edges = flow_map.get("edges", [])
+    if not nodes or not edges:
+        st.info("No flow map nodes or edges available.")
+        return
+
+    dot_lines = [
+        "digraph G {",
+        'graph [rankdir=LR, pad="0.6", nodesep="0.7", ranksep="1.1", bgcolor="transparent"];',
+        'node [shape=box, style="rounded,filled", fillcolor="#eef4fb", color="#6f94bf", fontname="Helvetica", fontsize="16", margin="0.25,0.18", penwidth="1.4"];',
+        'edge [color="#4f6f96", fontname="Helvetica", fontsize="13", penwidth="1.2"];',
+    ]
+    for node in nodes:
+        dot_lines.append(f'"{node.get("id", "")}" [label="{node.get("label", "")}"];')
+    for edge in edges:
+        dot_lines.append(f'"{edge.get("from", "")}" -> "{edge.get("to", "")}" [label="{edge.get("label", "")}"];')
+    dot_lines.append("}")
+    dot_graph = "\n".join(dot_lines)
+
+    try:
+        st.graphviz_chart(dot_graph, use_container_width=True)
+    except Exception:
+        st.code(dot_graph, language="dot")
+
+    if flow_map.get("diagram_text"):
+        st.caption(flow_map["diagram_text"])
+
+    linear_flow = " -> ".join(node.get("label", "") for node in nodes if node.get("label"))
+    if linear_flow:
+        st.markdown("**Linear View**")
+        st.code(linear_flow, language="text")
+
+    node_tab, edge_tab = st.tabs(["Flow Nodes", "Flow Edges"])
+    with node_tab:
+        render_table(nodes, "No flow nodes available.")
+    with edge_tab:
+        render_table(edges, "No flow edges available.")
+
+
 def render_step_outputs(result: dict) -> None:
-    legacy_reverse_step, legacy_collate_step, target_reverse_step, target_collate_step, gap_step = st.tabs(
-        ["Step 1: Legacy Reverse", "Step 2: Legacy Collate", "Step 3: Target Reverse", "Step 4: Target Collate", "Step 5: Gap Analysis"]
+    (
+        legacy_code_reverse_step,
+        legacy_sql_reverse_step,
+        legacy_collate_step,
+        target_code_reverse_step,
+        target_sql_reverse_step,
+        target_collate_step,
+        gap_step,
+    ) = st.tabs(
+        [
+            "Step 1: Legacy Code Reverse",
+            "Step 2: Legacy SQL Reverse",
+            "Step 3: Legacy Collate",
+            "Step 4: Target Code Reverse",
+            "Step 5: Target SQL Reverse",
+            "Step 6: Target Collate",
+            "Step 7: Gap Analysis",
+        ]
     )
 
-    with legacy_reverse_step:
-        render_spec(result.get("legacy_reverse_spec", {}), "Legacy Reverse Engineering Output")
+    with legacy_code_reverse_step:
+        render_spec(result.get("legacy_code_reverse_spec", {}), "Legacy Source Code Reverse Engineering Output")
+
+    with legacy_sql_reverse_step:
+        render_spec(result.get("legacy_sql_reverse_spec", {}), "Legacy SQL Reverse Engineering Output")
 
     with legacy_collate_step:
         render_spec(result.get("legacy_spec", {}), "Legacy Consolidated Specification")
+        render_flow_map(result.get("legacy_spec", {}).get("flow_map", {}), "Legacy Flow Map")
 
-    with target_reverse_step:
-        render_spec(result.get("target_reverse_spec", {}), "Target Reverse Engineering Output")
+    with target_code_reverse_step:
+        render_spec(result.get("target_code_reverse_spec", {}), "Target Source Code Reverse Engineering Output")
+
+    with target_sql_reverse_step:
+        render_spec(result.get("target_sql_reverse_spec", {}), "Target SQL Reverse Engineering Output")
 
     with target_collate_step:
         render_spec(result.get("target_spec", {}), "Target Consolidated Specification")
+        render_flow_map(result.get("target_spec", {}).get("flow_map", {}), "Target Flow Map")
 
     with gap_step:
         render_gap(result.get("gap_analysis", {}))
@@ -450,16 +599,37 @@ def main() -> None:
     st.title("AI Modernization Platform")
     st.caption("Reverse engineer legacy and target insurance systems, collate structured specs, and highlight migration gaps.")
 
-    default_legacy = str(settings.sample_inputs_dir / "legacy")
-    default_target = str(settings.sample_inputs_dir / "target")
+    default_legacy_code = str(settings.sample_inputs_dir / "legacy" / "quote_generation")
+    default_legacy_sql = str(settings.sample_inputs_dir / "legacy" / "quote_generation" / "sql")
+    default_target_code = str(settings.sample_inputs_dir / "target" / "quote_generation")
+    default_target_sql = str(settings.sample_inputs_dir / "target" / "quote_generation" / "sql")
     model_options = MODEL_OPTIONS if settings.model in MODEL_OPTIONS else [settings.model, *MODEL_OPTIONS]
 
     with st.sidebar:
         st.markdown("## Control Center")
         st.caption("Configure inputs, start the workflow, and review runtime settings.")
-        st.markdown("### Inputs")
-        legacy_folder = st.text_input("Legacy system folder", value=default_legacy)
-        target_folder = st.text_input("Target system folder", value=default_target)
+        st.markdown("### Legacy Inputs")
+        legacy_code_folder = st.text_input(
+            "Legacy source code root",
+            value=default_legacy_code,
+            help="Point this to the legacy code root. The code reverse pass will read VB/VB.NET files and ignore SQL.",
+        )
+        legacy_sql_folder = st.text_input(
+            "Legacy SQL folder",
+            value=default_legacy_sql,
+            help="Point this to the legacy SQL folder only.",
+        )
+        st.markdown("### Target Inputs")
+        target_code_folder = st.text_input(
+            "Target source code root",
+            value=default_target_code,
+            help="Point this to the target code root. The code reverse pass will read Angular/Node files and ignore SQL.",
+        )
+        target_sql_folder = st.text_input(
+            "Target SQL folder",
+            value=default_target_sql,
+            help="Point this to the target SQL folder only.",
+        )
         selected_model = st.selectbox(
             "Model",
             options=model_options,
@@ -468,9 +638,13 @@ def main() -> None:
         cache_enabled = st.toggle("Caching", value=settings.cache_enabled)
         run_clicked = st.button("Run Modernization Analysis", type="primary", use_container_width=True)
         st.markdown("### Workflow")
-        st.markdown("- Reverse legacy system")
-        st.markdown("- Reverse target system")
-        st.markdown("- Collate structured specs")
+        st.markdown("- Reverse legacy source code")
+        st.markdown("- Reverse legacy SQL")
+        st.markdown("- Collate legacy canonical specification")
+        st.markdown("- Reverse target source code")
+        st.markdown("- Reverse target SQL")
+        st.markdown("- Collate target canonical specification")
+        st.markdown("- Build graphical flow maps")
         st.markdown("- Run gap and compliance analysis")
         if st.session_state.get("analysis_result"):
             st.success("Latest analysis is loaded in the workspace.")
@@ -519,8 +693,13 @@ def main() -> None:
             progress_bar = progress_placeholder.progress(0, text="Initializing modernization workflow...")
             status_placeholder.info("Preparing artifact discovery and analysis context.")
             progress_bar.progress(20, text="Loading source folders and building execution plan...")
-            progress_bar.progress(45, text="Reverse engineering legacy and target systems...")
-            result = run_workflow(legacy_folder=legacy_folder, target_folder=target_folder)
+            progress_bar.progress(45, text="Reverse engineering source code and SQL for both systems...")
+            result = run_workflow(
+                legacy_code_folder=legacy_code_folder,
+                legacy_sql_folder=legacy_sql_folder,
+                target_code_folder=target_code_folder,
+                target_sql_folder=target_sql_folder,
+            )
             progress_bar.progress(80, text="Formatting findings, confidence scores, and comparison outputs...")
             st.session_state["analysis_result"] = result
             progress_bar.progress(100, text="Analysis complete.")
@@ -535,13 +714,13 @@ def main() -> None:
     result = st.session_state.get("analysis_result")
     if not result:
         st.markdown("### Ready to analyze")
-        st.write("Use the sample folders or point the app at your own legacy and target system artifacts.")
+        st.write("Use the sample folders or point the app at separate source-code and SQL folders for legacy and target systems.")
         return
 
     render_phase_progress(result.get("logs", []))
 
-    overview_tab, step_outputs_tab, legacy_tab, target_tab, comparison_tab, gap_tab, logs_tab, raw_tab = st.tabs(
-        ["Overview", "Step Outputs", "Legacy Spec", "Target Spec", "Comparison", "Gap Analysis", "Execution Logs", "Raw JSON"]
+    overview_tab, step_outputs_tab, legacy_tab, target_tab, flow_tab, comparison_tab, gap_tab, logs_tab, raw_tab = st.tabs(
+        ["Overview", "Step Outputs", "Legacy Spec", "Target Spec", "Flow Maps", "Comparison", "Gap Analysis", "Execution Logs", "Raw JSON"]
     )
 
     with overview_tab:
@@ -568,6 +747,13 @@ def main() -> None:
 
     with target_tab:
         render_spec(result.get("target_spec", {}), "Target Insurance System")
+
+    with flow_tab:
+        legacy_flow_tab, target_flow_tab = st.tabs(["Legacy Flow Map", "Target Flow Map"])
+        with legacy_flow_tab:
+            render_flow_map(result.get("legacy_spec", {}).get("flow_map", {}), "Legacy System Flow Map")
+        with target_flow_tab:
+            render_flow_map(result.get("target_spec", {}).get("flow_map", {}), "Target System Flow Map")
 
     with comparison_tab:
         render_comparison(result.get("collated_spec", {}), result.get("gap_analysis", {}))

@@ -9,10 +9,14 @@ from agents import collate, gap, reverse_legacy, reverse_target
 
 
 class AppState(TypedDict, total=False):
-    legacy_folder: str
-    target_folder: str
-    legacy_reverse_spec: dict
-    target_reverse_spec: dict
+    legacy_code_folder: str
+    legacy_sql_folder: str
+    target_code_folder: str
+    target_sql_folder: str
+    legacy_code_reverse_spec: dict
+    legacy_sql_reverse_spec: dict
+    target_code_reverse_spec: dict
+    target_sql_reverse_spec: dict
     legacy_spec: dict
     target_spec: dict
     collated_spec: dict
@@ -30,22 +34,34 @@ def append_log(state: AppState, agent: str, message: str) -> None:
 
 
 def legacy_node(state: AppState) -> AppState:
-    result = reverse_legacy.run(state["legacy_folder"], lambda a, m: append_log(state, a, m))
-    return {"legacy_reverse_spec": result, "logs": state["logs"]}
+    code_result = reverse_legacy.run(state["legacy_code_folder"], "code", lambda a, m: append_log(state, a, m))
+    sql_result = reverse_legacy.run(state["legacy_sql_folder"], "sql", lambda a, m: append_log(state, a, m))
+    return {"legacy_code_reverse_spec": code_result, "legacy_sql_reverse_spec": sql_result, "logs": state["logs"]}
 
 
 def legacy_collate_node(state: AppState) -> AppState:
-    result = collate.run("Legacy Insurance System", state["legacy_reverse_spec"], lambda _a, m: append_log(state, "collate_legacy", m))
+    result = collate.run(
+        "Legacy Insurance System",
+        state["legacy_code_reverse_spec"],
+        state["legacy_sql_reverse_spec"],
+        lambda _a, m: append_log(state, "collate_legacy", m),
+    )
     return {"legacy_spec": result, "logs": state["logs"]}
 
 
 def target_node(state: AppState) -> AppState:
-    result = reverse_target.run(state["target_folder"], lambda a, m: append_log(state, a, m))
-    return {"target_reverse_spec": result, "logs": state["logs"]}
+    code_result = reverse_target.run(state["target_code_folder"], "code", lambda a, m: append_log(state, a, m))
+    sql_result = reverse_target.run(state["target_sql_folder"], "sql", lambda a, m: append_log(state, a, m))
+    return {"target_code_reverse_spec": code_result, "target_sql_reverse_spec": sql_result, "logs": state["logs"]}
 
 
 def target_collate_node(state: AppState) -> AppState:
-    result = collate.run("Target Insurance System", state["target_reverse_spec"], lambda _a, m: append_log(state, "collate_target", m))
+    result = collate.run(
+        "Target Insurance System",
+        state["target_code_reverse_spec"],
+        state["target_sql_reverse_spec"],
+        lambda _a, m: append_log(state, "collate_target", m),
+    )
     return {
         "target_spec": result,
         "collated_spec": build_comparison_overview(state.get("legacy_spec", {}), result),
@@ -97,6 +113,8 @@ def build_comparison_overview(legacy_spec: dict, target_spec: dict) -> dict:
         "key_differences": key_differences,
         "modernization_focus_areas": modernization_focus_areas,
         "confidence": {"overview_confidence": 0.72},
+        "legacy_flow_map": legacy_spec.get("flow_map", {}),
+        "target_flow_map": target_spec.get("flow_map", {}),
     }
 
 
@@ -116,11 +134,13 @@ def build_graph():
     return workflow.compile()
 
 
-def run_workflow(legacy_folder: str, target_folder: str) -> AppState:
+def run_workflow(legacy_code_folder: str, legacy_sql_folder: str, target_code_folder: str, target_sql_folder: str) -> AppState:
     graph = build_graph()
     initial_state: AppState = {
-        "legacy_folder": legacy_folder,
-        "target_folder": target_folder,
+        "legacy_code_folder": legacy_code_folder,
+        "legacy_sql_folder": legacy_sql_folder,
+        "target_code_folder": target_code_folder,
+        "target_sql_folder": target_sql_folder,
         "logs": [],
     }
     return graph.invoke(initial_state)

@@ -18,7 +18,7 @@ def run(legacy_spec: dict, target_spec: dict, logger) -> dict:
 
     logger("gap", "Performing gap analysis.")
     prompt = load_prompt(settings.prompts_dir / "gap_prompt.txt")
-    raw = call_llm_json("gap", prompt, payload)
+    raw = call_llm_json("gap", prompt, payload, require_live_call=not settings.cache_enabled)
     parsed = safe_json_loads(raw.get("raw_text", ""), fallback=raw)
     normalized = normalize_gap_output(parsed)
     if settings.cache_enabled:

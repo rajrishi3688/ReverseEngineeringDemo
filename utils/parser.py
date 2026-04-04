@@ -38,12 +38,20 @@ def ensure_list(value: Any) -> list[Any]:
 def normalize_reverse_output(payload: dict[str, Any], system_name: str) -> dict[str, Any]:
     return {
         "system_name": payload.get("system_name") or system_name,
+        "artifact_kind": payload.get("artifact_kind", ""),
         "summary": payload.get("summary", ""),
         "fields": ensure_list(payload.get("fields")),
         "business_rules": ensure_list(payload.get("business_rules")),
         "country_specific_rules": ensure_list(payload.get("country_specific_rules")),
         "validations": ensure_list(payload.get("validations")),
         "calculations": ensure_list(payload.get("calculations")),
+        "ui_components": ensure_list(payload.get("ui_components")),
+        "classes": ensure_list(payload.get("classes")),
+        "methods": ensure_list(payload.get("methods")),
+        "procedures": ensure_list(payload.get("procedures")),
+        "procedure_dependencies": ensure_list(payload.get("procedure_dependencies")),
+        "table_dependencies": ensure_list(payload.get("table_dependencies")),
+        "api_endpoints": ensure_list(payload.get("api_endpoints")),
         "confidence": payload.get("confidence", {}),
         "source_files": ensure_list(payload.get("source_files")),
         "notes": ensure_list(payload.get("notes")),
@@ -58,6 +66,8 @@ def normalize_system_output(payload: dict[str, Any], system_name: str) -> dict[s
     normalized["persistence_model"] = ensure_list(payload.get("persistence_model"))
     normalized["audit_controls"] = ensure_list(payload.get("audit_controls"))
     normalized["exception_paths"] = ensure_list(payload.get("exception_paths"))
+    normalized["flow_map"] = payload.get("flow_map", {"nodes": [], "edges": [], "diagram_text": ""})
+    normalized["source_breakdown"] = payload.get("source_breakdown", {})
     return normalized
 
 

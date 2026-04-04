@@ -12,9 +12,11 @@ Required top-level keys:
 - confidence
 - source_files
 - notes
+- flow_map
+- source_breakdown
 
 Objective:
-- Use the reverse-engineered UI, API, database, procedure, and rule findings for the provided system to build one complete business transaction specification.
+- Use the reverse-engineered code-source findings and SQL-source findings for the provided system to build one complete business transaction specification.
 - Consolidate fragmented findings into a canonical end-to-end transaction flow for this system.
 - Produce final business rules and specifications that will later be compared against the other system by the gap analysis prompt.
 
@@ -27,7 +29,7 @@ Strict output rules:
   - notes
 
 Synthesis instructions:
-- Merge the provided reverse-engineered findings into one coherent business specification for the provided system.
+- Merge the provided code reverse-engineered findings and SQL reverse-engineered findings into one coherent business specification for the provided system.
 - Reconstruct the overall business transaction flow from intake through validation, pricing, discounting, risk processing, tax handling, consent/compliance checks, persistence, audit, and response/output.
 - Combine UI findings and DB/procedure/API findings into a single operational view of how the system works.
 - Resolve duplicate or overlapping rules into canonical business rules where possible.
@@ -52,6 +54,18 @@ Field expectations:
   - persistence_model
   - audit_controls
   - exception_paths
+  - flow_map
+  - source_breakdown
+
+Flow map expectations:
+- `flow_map` must be an object with:
+  - nodes: array of objects containing `id`, `label`, and `type`
+  - edges: array of objects containing `from`, `to`, and `label`
+  - diagram_text: short textual summary of the flow
+- Build the flow map from the collated output so it can be rendered graphically later.
+
+Source breakdown expectations:
+- `source_breakdown` should identify which major findings came from code vs SQL evidence and preserve the source file groups.
 
 Priority lens:
 - Give special attention to building complete business specifications for:
