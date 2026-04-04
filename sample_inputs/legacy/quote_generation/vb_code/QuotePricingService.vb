@@ -1,4 +1,3 @@
-Imports LegacyModernization.QuoteGeneration.Backend.Contracts
 Imports LegacyModernization.QuoteGeneration.Backend.Data
 Imports LegacyModernization.QuoteGeneration.Backend.Models
 
@@ -12,14 +11,14 @@ Namespace LegacyModernization.QuoteGeneration.Backend.Services
             _referenceRepository = referenceRepository
         End Sub
 
-        Public Function CalculateQuote(request As QuoteRequest, strategy As ICountryQuoteStrategy) As QuoteResult
+        Public Function CalculateQuote(request As QuoteRequest, countryRules As LegacyCountryRuleService) As QuoteResult
             Dim basePremium = _referenceRepository.GetBasePremium(request.PolicyType, request.CoverageAmount)
             Dim riskFactor = _quoteRepository.CalculateRiskFactor(request)
             Dim discountAmount = _quoteRepository.CalculateDiscount(request, basePremium)
             Dim taxAmount = _quoteRepository.CalculateCountryTax(request.CountryCode, request.PolicyType, basePremium)
 
             Dim premiumAfterCoreRules = (basePremium * riskFactor) - discountAmount + taxAmount
-            Dim vbCountryAdjustment = strategy.ApplyCountryAdjustments(request, premiumAfterCoreRules)
+            Dim vbCountryAdjustment = countryRules.ApplyCountryAdjustments(request, premiumAfterCoreRules)
             Dim sqlCountryAdjustment = _quoteRepository.CalculateCountrySpecificAdjustment(request, premiumAfterCoreRules)
             Dim countryAdjustment = If(sqlCountryAdjustment <> 0D, sqlCountryAdjustment, vbCountryAdjustment)
 

@@ -34,7 +34,8 @@ Extraction focus:
 - Methods/functions and their parameters
 - Call chains and interdependencies across layers
 - API endpoints and payload semantics when present
-- Business validations and orchestration rules visible in code
+- Common business validations and orchestration rules visible in code
+- Country-specific business rules visible in code, kept separate from common rules
 
 Strict output rules:
 - Return one valid JSON object only.
@@ -48,6 +49,8 @@ Strict output rules:
 
 Notes:
 - `fields` should emphasize application-facing fields and canonical names.
+- `business_rules` should contain only common rules that apply across countries or are not country-specific.
+- `country_specific_rules` should contain only rules that vary by country, region, or market.
 - `ui_components` should describe screens/forms/components and major controls/actions.
 - `classes` should capture responsibilities and dependencies.
 - `methods` should capture owners, parameters, and downstream calls.

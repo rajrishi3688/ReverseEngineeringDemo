@@ -1,0 +1,122 @@
+You are a senior business analyst and insurance domain expert.
+
+Your task is to generate a DRAFT business requirements document based on:
+1. legacy system specification
+2. target system specification
+3. gap analysis
+
+This output is not final.
+It must be prepared for SME review and approval.
+
+LEGACY SPEC:
+{legacy}
+
+TARGET SPEC:
+{target}
+
+GAP ANALYSIS:
+{gap}
+
+Return STRICT JSON only in the following structure:
+
+{
+  "document_type": "requirements_draft",
+  "screen_name": "",
+  "business_context": "",
+  "functional_requirements": [
+    {
+      "id": "",
+      "title": "",
+      "description": "",
+      "priority": "High/Medium/Low",
+      "rationale": "",
+      "source_gap": "",
+      "acceptance_criteria": []
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "",
+      "title": "",
+      "description": "",
+      "priority": "High/Medium/Low"
+    }
+  ],
+  "compliance_requirements": [
+    {
+      "id": "",
+      "title": "",
+      "description": "",
+      "region": "",
+      "priority": "High/Medium/Low"
+    }
+  ],
+  "data_requirements": [
+    {
+      "id": "",
+      "entity": "",
+      "requirement": ""
+    }
+  ],
+  "ui_requirements": [
+    {
+      "id": "",
+      "field_or_component": "",
+      "requirement": ""
+    }
+  ],
+  "api_requirements": [
+    {
+      "id": "",
+      "api_name": "",
+      "requirement": ""
+    }
+  ],
+  "migration_requirements": [
+    {
+      "id": "",
+      "requirement": ""
+    }
+  ],
+  "assumptions": [],
+  "open_questions_for_sme": [],
+  "review_notes": [
+    "This is a draft pending SME validation."
+  ],
+  "approval": {
+    "status": "PENDING_SME_APPROVAL",
+    "required_reviewer_role": "SME",
+    "approved_by": "",
+    "approved_on": "",
+    "review_comments": ""
+  }
+}
+
+Rules:
+- Generate draft requirements only.
+- Do not assume business approval.
+- Highlight ambiguities in open_questions_for_sme.
+- Include acceptance criteria wherever possible.
+- Keep the output review-friendly and precise.
+- Use business-readable language that an SME or business stakeholder can review without needing code knowledge.
+- Avoid low-level technical wording unless it is required to preserve clarity or traceability.
+- Phrase requirements in terms of business behavior, validation outcomes, compliance expectations, user experience, and operational needs.
+- Treat the legacy capability baseline plus the gap analysis as the modernization scope.
+- If a legacy capability is missing in the current target, assume it needs to be built unless the inputs explicitly say it is out of scope.
+- Do not assume the current target limitation defines the final future-state scope.
+- Include requirements for missing country-specific logic, missing workflows, and missing controls when those are identified in the gap analysis.
+- Define country-specific requirements explicitly when the legacy system supports country-specific behavior that is missing or incomplete in the target.
+- Create separate, traceable requirement IDs for major country-specific capabilities where needed, rather than collapsing them into one generic requirement.
+- Ensure country-specific requirements are specific enough to drive technical design and forward engineering later.
+- For country-specific scope, do not write only a generic statement such as "support country-specific rules."
+- Write explicit requirements for each affected country when the inputs identify country-specific differences.
+- For each country-specific requirement, name the country and the exact missing business behavior, such as validations, pricing adjustments, tax treatment, product eligibility, field behavior, workflow branching, compliance rules, notices, or reference-data usage.
+- Treat country-specific requirements as first-class functional requirements, not as side notes or assumptions.
+- Create separate functional requirement entries for each supported country and each materially different country rule area when the legacy and gap inputs show that behavior.
+- If Spain, Portugal, Italy, Germany, the United Kingdom, Switzerland, or other countries appear in the inputs, write separate requirements for each of those countries where rules differ.
+- Include the exact business rule, formula, threshold, rate logic, tax handling, sequencing rule, or reference-data dependency whenever it can be recovered from the inputs.
+- If multiple formulas or rule variants exist for one country, split them into multiple requirement entries instead of collapsing them into one generic country requirement.
+- Write requirement titles and descriptions in a concrete requirement style, for example `Spain quote pricing shall follow the approved Spain pricing model`, rather than generic modernization wording.
+- If multiple rule types are missing for the same country, either capture them in one detailed country requirement or create multiple country-specific requirements so the downstream design can implement them precisely.
+- Make the acceptance criteria country-aware and testable, so an SME can confirm what must happen for Spain, Portugal, Italy, Germany, the United Kingdom, Switzerland, or any other country found in the inputs.
+- Return JSON only.

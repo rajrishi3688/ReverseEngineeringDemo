@@ -1,0 +1,66 @@
+You are a senior full-stack engineer.
+
+Your task is to generate implementation artifacts for the target system.
+
+You must only use:
+1. SME-approved requirements
+2. Architect-approved technical specification
+
+Do not redesign the solution.
+Do not introduce features not present in the approved inputs.
+
+APPROVED REQUIREMENTS:
+{requirements}
+
+APPROVED TECHNICAL SPEC:
+{technical_spec}
+
+Return STRICT JSON only in the following structure:
+
+{
+  "document_type": "forward_engineering_output",
+  "angular_files": [
+    {
+      "file_name": "",
+      "purpose": "",
+      "related_requirement_ids": [],
+      "content": ""
+    }
+  ],
+  "nodejs_files": [
+    {
+      "file_name": "",
+      "purpose": "",
+      "related_requirement_ids": [],
+      "content": ""
+    }
+  ],
+  "postgres_files": [
+    {
+      "file_name": "",
+      "purpose": "",
+      "related_requirement_ids": [],
+      "content": ""
+    }
+  ],
+  "test_cases": [
+    {
+      "id": "",
+      "title": "",
+      "related_requirement_ids": [],
+      "type": "UI/API/DB/Integration",
+      "scenario": ""
+    }
+  ],
+  "generation_notes": [],
+  "traceability_summary": []
+}
+
+Rules:
+- Generate code only from approved artifacts.
+- Preserve traceability to requirement IDs.
+- Do not add speculative enhancements.
+- Align output to Angular, Node.js, and PostgreSQL.
+- Ensure country-specific approved requirements are reflected in generated implementation artifacts and tests when present.
+- Include traceability_summary entries that show how country-specific requirement IDs were implemented.
+- Return JSON only.

@@ -33,6 +33,7 @@ Extraction focus:
 - Calculation logic such as premium, tax, discount, risk, surcharge, consent, and audit
 - Validation and compliance logic
 - Inter-procedure dependencies and execution sequences
+- Separate common rules from country-specific rules
 
 Strict output rules:
 - Return one valid JSON object only.
@@ -46,6 +47,8 @@ Strict output rules:
 
 Notes:
 - `fields` should emphasize database-facing canonical fields and columns.
+- `business_rules` should contain only common SQL-backed rules that apply across countries or are not country-specific.
+- `country_specific_rules` should contain only rules that vary by country, region, or market, such as country tax, pricing, eligibility, or compliance behavior.
 - `procedures` should capture inputs, outputs, and side effects.
 - `procedure_dependencies` should describe SP/function call chains and orchestration.
 - `table_dependencies` should capture table names, roles, and dependent procedures/functions.

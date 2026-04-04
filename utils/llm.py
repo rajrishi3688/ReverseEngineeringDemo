@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from config import settings
+from utils.parser import ensure_list
 
 try:
     from openai import OpenAI
@@ -18,6 +19,71 @@ except ImportError:  # pragma: no cover - runtime fallback
 
 def load_prompt(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _render_prompt_template(prompt: str, prompt_args: dict[str, str]) -> str:
+    rendered = prompt
+    for key, value in prompt_args.items():
+        rendered = rendered.replace(f"{{{key}}}", value)
+    return rendered
+
+
+def _slugify_identifier(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value.upper()).strip("_")
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned or "UNKNOWN"
+
+
+def _extract_country_rule_context(legacy: dict, gap: dict) -> list[dict]:
+    legacy_rules = ensure_list(legacy.get("country_specific_rules"))
+    missing_features = ensure_list(gap.get("missing_features"))
+    rule_comparison = ensure_list(gap.get("rule_comparison"))
+
+    country_map: dict[str, list[str]] = {}
+
+    for rule in legacy_rules:
+        if not isinstance(rule, dict):
+            continue
+        country = str(rule.get("country", "")).strip()
+        description = str(rule.get("description", "")).strip()
+        rule_name = str(rule.get("rule_name", "")).strip()
+        if not country:
+            continue
+        country_map.setdefault(country, [])
+        for detail in (rule_name, description):
+            if detail and detail not in country_map[country]:
+                country_map[country].append(detail)
+
+    for item in missing_features:
+        if not isinstance(item, str):
+            continue
+        lowered = item.lower()
+        for country in list(country_map.keys()):
+            if country.lower() in lowered and item not in country_map[country]:
+                country_map[country].append(item)
+
+    for item in rule_comparison:
+        if not isinstance(item, dict):
+            continue
+        description = str(item.get("description", "")).strip()
+        evidence = ensure_list(item.get("evidence"))
+        combined = " ".join([description, *[str(entry) for entry in evidence]]).lower()
+        for country in list(country_map.keys()):
+            if country.lower() in combined and description and description not in country_map[country]:
+                country_map[country].append(description)
+
+    results = []
+    for country, details in sorted(country_map.items()):
+        normalized_details = [detail for detail in details if detail]
+        results.append(
+            {
+                "country": country,
+                "requirement_id": f"FR-COUNTRY-{_slugify_identifier(country)}",
+                "details": normalized_details,
+            }
+        )
+    return results
 
 
 def _build_mock_reverse_response(system_name: str, artifact_kind: str, file_names: list[str], is_legacy: bool) -> dict:
@@ -314,6 +380,349 @@ def _build_mock_collate_response(system_name: str, code_reverse_spec: dict, sql_
     }
 
 
+def _build_mock_requirements_response(input_payload: dict) -> dict:
+    legacy = input_payload.get("legacy", {})
+    target = input_payload.get("target", {})
+    gap = input_payload.get("gap", {})
+    screen_name = "Quote Generation"
+    legacy_name = legacy.get("system_name", "Legacy Insurance System")
+    target_name = target.get("system_name", "Target Insurance System")
+    missing_features = ensure_list(gap.get("missing_features"))
+    compliance_gaps = ensure_list(gap.get("compliance_gaps"))
+    open_questions = ensure_list(gap.get("compliance_gaps"))[:3]
+    country_rule_context = _extract_country_rule_context(legacy, gap)
+
+    functional_requirements = [
+        {
+            "id": "FR-001",
+            "title": "Preserve quote generation workflow parity",
+            "description": "The target solution must preserve the end-to-end validation, pricing, and persistence workflow supported by the legacy system.",
+            "priority": "High",
+            "rationale": "Core quote generation capability must remain functionally consistent during modernization.",
+            "source_gap": "Missing or partial workflow parity in gap analysis.",
+            "acceptance_criteria": [
+                "Quote request is validated before pricing.",
+                "Pricing results are persisted only after successful validation.",
+                "Errors are surfaced when validation fails.",
+            ],
+        }
+    ]
+
+    if missing_features:
+        functional_requirements.append(
+            {
+                "id": "FR-002",
+                "title": "Build missing legacy capabilities into the target solution",
+                "description": "All business capabilities identified as missing in the current target must be implemented in the modernized target solution.",
+                "priority": "High",
+                "rationale": "The modernization scope should close legacy-to-target capability gaps rather than preserve the current limited target scope.",
+                "source_gap": "; ".join(missing_features),
+                "acceptance_criteria": [
+                    "Each missing legacy capability identified in the gap analysis is represented in the delivered target solution.",
+                    "Country-specific rules missing from the current target are implemented where required for parity.",
+                    "SME review confirms that no approved legacy capability has been omitted from the future-state requirements.",
+                ],
+            }
+        )
+
+    for country_rule in country_rule_context:
+        country = country_rule["country"]
+        country_requirement_id = country_rule["requirement_id"]
+        detail_summary = "; ".join(country_rule["details"]) or f"Missing {country} quote-processing rules identified in the legacy-to-target gap."
+        functional_requirements.append(
+            {
+                "id": country_requirement_id,
+                "title": f"Implement {country} quote-generation rules",
+                "description": f"The target solution must implement the {country}-specific quote-generation behavior that exists in the legacy system but is missing or incomplete in the current target, including the identified validations, pricing or tax handling, reference-data usage, workflow branching, and user-facing behavior required for {country}.",
+                "priority": "High",
+                "rationale": f"{country}-specific business rules are part of the approved modernization scope and must be implemented explicitly rather than treated as generic regional logic.",
+                "source_gap": detail_summary,
+                "acceptance_criteria": [
+                    f"{country} quote requests apply the approved {country}-specific validations, pricing or tax logic, and workflow behavior defined by the legacy baseline and gap analysis.",
+                    f"The target solution uses the required {country} reference data, calculations, and rule outcomes consistently across UI, API, and persistence processing where applicable.",
+                    f"Business and test evidence can trace {country_requirement_id} from requirement through design, implementation, and country-specific scenario validation.",
+                ],
+            }
+        )
+
+    return {
+        "document_type": "requirements_draft",
+        "screen_name": screen_name,
+        "business_context": f"Draft modernization requirements bridging {legacy_name} to {target_name}, assuming missing legacy capabilities and controls must be built into the future-state target solution.",
+        "functional_requirements": functional_requirements,
+        "non_functional_requirements": [
+            {
+                "id": "NFR-001",
+                "title": "Auditability",
+                "description": "The target implementation should preserve operational traceability for quote processing.",
+                "priority": "High",
+            }
+        ],
+        "compliance_requirements": [
+            {
+                "id": "CR-001",
+                "title": "Consent and regulatory controls",
+                "description": "The modernized flow must preserve consent and regional compliance controls called out in the gap analysis.",
+                "region": "EU",
+                "priority": "High",
+            }
+        ],
+        "data_requirements": [
+            {
+                "id": "DR-001",
+                "entity": "Quote",
+                "requirement": "Quote data must maintain canonical field parity between legacy and target systems.",
+            }
+        ],
+        "ui_requirements": [
+            {
+                "id": "UIR-001",
+                "field_or_component": screen_name,
+                "requirement": "The UI must capture the required inputs needed for validation and pricing.",
+            }
+        ],
+        "api_requirements": [
+            {
+                "id": "APIR-001",
+                "api_name": "Quote Generation API",
+                "requirement": "APIs must support the approved quote-generation workflow and traceability expectations.",
+            }
+        ],
+        "migration_requirements": [
+            {
+                "id": "MR-001",
+                "requirement": "Country-specific rules and compliance-sensitive logic missing from the current target must be implemented for migration parity before release.",
+            }
+        ],
+        "assumptions": ["Draft generated from collated legacy/target specs and gap analysis context."],
+        "open_questions_for_sme": open_questions,
+        "review_notes": ["This is a draft pending SME validation."],
+        "approval": {
+            "status": "PENDING_SME_APPROVAL",
+            "required_reviewer_role": "SME",
+            "approved_by": "",
+            "approved_on": "",
+            "review_comments": "",
+        },
+    }
+
+
+def _build_mock_technical_spec_response(input_payload: dict) -> dict:
+    requirements = input_payload.get("requirements", {})
+    functional_requirements = ensure_list(requirements.get("functional_requirements"))
+    country_requirement_ids = [
+        str(item.get("id", ""))
+        for item in functional_requirements
+        if isinstance(item, dict) and str(item.get("id", "")).startswith("FR-COUNTRY")
+    ]
+
+    ui_design = [
+        {
+            "component": "QuoteGenerationComponent",
+            "responsibility": "Capture quote inputs and submit approved quote-generation requests.",
+            "related_requirement_ids": ["FR-001"],
+        }
+    ]
+    service_design = [
+        {
+            "service_name": "QuoteWorkflowService",
+            "responsibility": "Coordinate validation, pricing, compliance, and persistence.",
+            "business_rules_supported": ["Validation before pricing", "Persist after successful validation"],
+            "related_requirement_ids": ["FR-001", "CR-001"],
+        }
+    ]
+    rule_configuration_design = [
+        {
+            "rule_area": "Country-specific pricing and compliance",
+            "approach": "Externalize regional rules and validation thresholds where possible.",
+            "details": "Support configuration-backed regional processing for modernization parity.",
+            "related_requirement_ids": ["MR-001", "CR-001"],
+        }
+    ]
+    validation_design = [
+        {
+            "validation_name": "Quote request validation",
+            "logic": "Validate required fields and compliance preconditions before pricing execution.",
+            "layer": "API",
+            "related_requirement_ids": ["FR-001", "CR-001"],
+        }
+    ]
+    integration_design = [
+        {
+            "integration_point": "Reference and pricing data sources",
+            "details": "Use repository-backed integrations for pricing, compliance, and persistence flows.",
+        }
+    ]
+
+    if country_requirement_ids:
+        ui_design.append(
+            {
+                "component": "Country-aware quote generation workflow",
+                "responsibility": "Support country-sensitive quote behavior, inputs, messages, and scenario handling where required by approved requirements.",
+                "related_requirement_ids": country_requirement_ids,
+            }
+        )
+        service_design.append(
+            {
+                "service_name": "CountryRuleOrchestrationService",
+                "responsibility": "Apply country-specific quote rules, adjustments, and validations based on approved business requirements.",
+                "business_rules_supported": ["Country-specific rule selection", "Country-specific pricing adjustments", "Country-specific validation handling"],
+                "related_requirement_ids": [*country_requirement_ids, "MR-001"],
+            }
+        )
+        rule_configuration_design.append(
+            {
+                "rule_area": "Country-specific quote logic",
+                "approach": "Implement explicit country-aware rule handling with traceable configuration or service logic.",
+                "details": "Support country-specific rules that are missing from the current target and required for parity with the approved modernization scope.",
+                "related_requirement_ids": country_requirement_ids,
+            }
+        )
+        validation_design.append(
+            {
+                "validation_name": "Country-specific validation handling",
+                "logic": "Apply country-sensitive validation and compliance checks where required by approved business requirements.",
+                "layer": "API",
+                "related_requirement_ids": country_requirement_ids,
+            }
+        )
+        integration_design.append(
+            {
+                "integration_point": "Country rule and reference data support",
+                "details": "Support country-specific pricing, tax, and reference-data lookups required by approved country-specific requirements.",
+            }
+        )
+
+    return {
+        "document_type": "technical_spec_draft",
+        "screen_name": "Quote Generation",
+        "target_stack": {"frontend": "Angular", "backend": "Node.js", "database": "PostgreSQL"},
+        "ui_design": ui_design,
+        "api_design": [
+            {
+                "name": "GenerateQuote",
+                "method": "POST",
+                "path": "/api/v1/quotes/generate",
+                "request_fields": ["customer_id", "policy_type", "coverage_amount", "country_code"],
+                "response_fields": ["quote_id", "final_premium"],
+                "related_requirement_ids": ["FR-001", "APIR-001"],
+            }
+        ],
+        "service_design": service_design,
+        "data_design": [
+            {
+                "entity": "Quote",
+                "fields": ["quote_id", "customer_id", "policy_type", "coverage_amount", "final_premium"],
+                "relationships": ["Quote belongs to Customer"],
+                "related_requirement_ids": ["DR-001"],
+            }
+        ],
+        "rule_configuration_design": rule_configuration_design,
+        "validation_design": validation_design,
+        "security_and_compliance_design": [
+            {
+                "area": "Consent and audit",
+                "design_decision": "Enforce compliance checks before persistence and log key workflow events.",
+                "related_requirement_ids": ["CR-001", "NFR-001"],
+            }
+        ],
+        "integration_design": integration_design,
+        "assumptions": ["Draft generated from approved requirements."],
+        "open_questions_for_architect": [],
+        "review_notes": ["This is a draft pending architect validation."],
+        "approval": {
+            "status": "PENDING_ARCHITECT_APPROVAL",
+            "required_reviewer_role": "Architect",
+            "approved_by": "",
+            "approved_on": "",
+            "review_comments": "",
+        },
+    }
+
+
+def _build_mock_forward_engineering_response(input_payload: dict) -> dict:
+    requirements = input_payload.get("requirements", {})
+    functional_requirements = ensure_list(requirements.get("functional_requirements"))
+    country_requirement_ids = [
+        str(item.get("id", ""))
+        for item in functional_requirements
+        if isinstance(item, dict) and str(item.get("id", "")).startswith("FR-COUNTRY")
+    ]
+
+    angular_files = [
+        {
+            "file_name": "quote-generation.component.ts",
+            "purpose": "Implements the approved quote-generation UI flow.",
+            "related_requirement_ids": ["FR-001"],
+            "content": "// Mock Angular implementation artifact",
+        }
+    ]
+    nodejs_files = [
+        {
+            "file_name": "quote-workflow.service.js",
+            "purpose": "Implements the approved orchestration flow.",
+            "related_requirement_ids": ["FR-001", "CR-001"],
+            "content": "// Mock Node.js implementation artifact",
+        }
+    ]
+    postgres_files = [
+        {
+            "file_name": "quote_workflow.sql",
+            "purpose": "Supports approved persistence and rule behavior.",
+            "related_requirement_ids": ["DR-001"],
+            "content": "-- Mock PostgreSQL implementation artifact",
+        }
+    ]
+    test_cases = [
+        {
+            "id": "TC-001",
+            "title": "Validate quote generation happy path",
+            "related_requirement_ids": ["FR-001"],
+            "type": "Integration",
+            "scenario": "Submit a valid quote request and verify validation, pricing, and persistence complete successfully.",
+        }
+    ]
+    traceability_summary = ["FR-001 traced across UI, API, and persistence artifacts."]
+
+    if country_requirement_ids:
+        nodejs_files.append(
+            {
+                "file_name": "country-rule-orchestration.service.js",
+                "purpose": "Implements country-specific rule handling required by approved modernization scope.",
+                "related_requirement_ids": [*country_requirement_ids, "MR-001"],
+                "content": "// Mock Node.js country-specific implementation artifact",
+            }
+        )
+        postgres_files.append(
+            {
+                "file_name": "country_rule_configuration.sql",
+                "purpose": "Supports country-specific rule configuration and persistence needs.",
+                "related_requirement_ids": country_requirement_ids,
+                "content": "-- Mock PostgreSQL country-specific implementation artifact",
+            }
+        )
+        test_cases.append(
+            {
+                "id": "TC-COUNTRY-001",
+                "title": "Validate country-specific quote behavior",
+                "related_requirement_ids": country_requirement_ids,
+                "type": "Integration",
+                "scenario": "Execute approved country-specific quote scenarios and confirm country-aware logic, pricing, and validation outcomes are implemented.",
+            }
+        )
+        traceability_summary.append(f"{', '.join(country_requirement_ids)} traced across country-aware service logic, configuration support, and integration tests.")
+
+    return {
+        "document_type": "forward_engineering_output",
+        "angular_files": angular_files,
+        "nodejs_files": nodejs_files,
+        "postgres_files": postgres_files,
+        "test_cases": test_cases,
+        "generation_notes": ["Generated from approved requirements and approved technical specification."],
+        "traceability_summary": traceability_summary,
+    }
+
+
 def _build_mock_response(agent_name: str, input_payload: dict) -> dict:
     system_name = input_payload.get("system_name", agent_name)
     file_names = [item.get("name", "unknown") for item in input_payload.get("files", [])]
@@ -328,6 +737,15 @@ def _build_mock_response(agent_name: str, input_payload: dict) -> dict:
             input_payload.get("code_reverse_spec", {}),
             input_payload.get("sql_reverse_spec", {}),
         )
+
+    if agent_name == "requirements":
+        return _build_mock_requirements_response(input_payload)
+
+    if agent_name == "technical_spec":
+        return _build_mock_technical_spec_response(input_payload)
+
+    if agent_name == "forward_engineering":
+        return _build_mock_forward_engineering_response(input_payload)
 
     return {
         "missing_features": [
@@ -402,6 +820,42 @@ def _build_mock_response(agent_name: str, input_payload: dict) -> dict:
                 "confidence": 0.76,
             },
         ],
+        "common_rules_missed": [
+            {
+                "rule_id": "BR-AGE-RISK",
+                "rule_name": "Age Risk Loading",
+                "legacy_formula_or_logic": "Apply incremental risk loading when driver age crosses defined threshold bands used by legacy pricing procedures.",
+                "target_formula_or_logic": "Target applies a simplified risk adjustment and does not preserve the same threshold bands or loading increments.",
+                "gap_summary": "The shared risk-loading rule is only partially implemented in target.",
+                "business_impact": "Premium outcomes may differ across the standard quote journey, creating pricing leakage and inconsistent underwriting outcomes.",
+                "evidence": ["sp_apply_risk_loading.sybase.sql", "rating.service.js"],
+                "recommended_action": "Implement the approved common risk-loading thresholds and factors in target pricing services.",
+            }
+        ],
+        "country_specific_rules_missed": [
+            {
+                "country": "Germany",
+                "rule_id": "BR-DE-TAX",
+                "rule_name": "Germany Insurance Tax Logic",
+                "legacy_formula_or_logic": "Apply Germany-specific insurance tax calculation using legacy country tax lookup and premium adjustment rules before final premium confirmation.",
+                "target_formula_or_logic": "No equivalent Germany-specific tax logic is present in the target flow.",
+                "gap_summary": "Germany-specific tax calculation is missing in target.",
+                "business_impact": "German quotes may produce incorrect premium totals and downstream reconciliation issues.",
+                "evidence": ["country_tax_rules.sybase.sql", "sp_lookup_country_tax.sybase.sql"],
+                "recommended_action": "Implement Germany tax rule lookup, calculation, and traceable test coverage in the target solution.",
+            },
+            {
+                "country": "Italy",
+                "rule_id": "BR-IT-TAX",
+                "rule_name": "Italy Insurance Tax Logic",
+                "legacy_formula_or_logic": "Apply Italy-specific premium tax handling and related reference-data lookup before persistence.",
+                "target_formula_or_logic": "No equivalent Italy-specific tax or reference-data handling is present in the target flow.",
+                "gap_summary": "Italy-specific tax and reference-data behavior is missing in target.",
+                "business_impact": "Italian quote outcomes may be inaccurate and non-compliant with expected regional processing.",
+                "evidence": ["country_tax_rules.sybase.sql", "sp_lookup_country_tax.sybase.sql"],
+                "recommended_action": "Implement Italy-specific tax logic and supporting reference-data integration in the target solution.",
+            },
+        ],
         "confidence": {
             "gap_confidence": 0.87,
             "coverage_of_analysis": {
@@ -416,7 +870,10 @@ def _build_mock_response(agent_name: str, input_payload: dict) -> dict:
 
 
 def call_llm_json(agent_name: str, prompt: str, input_payload: dict, require_live_call: bool = False) -> dict:
-    formatted_prompt = prompt.format(payload=json.dumps(input_payload, ensure_ascii=False, indent=2))
+    prompt_args = {"payload": json.dumps(input_payload, ensure_ascii=False, indent=2)}
+    for key, value in input_payload.items():
+        prompt_args[key] = json.dumps(value, ensure_ascii=False, indent=2)
+    formatted_prompt = _render_prompt_template(prompt, prompt_args)
 
     if settings.model.startswith("claude"):
         if not settings.anthropic_api_key or Anthropic is None:

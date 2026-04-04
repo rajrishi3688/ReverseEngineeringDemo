@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 from datetime import datetime
+import difflib
 import json
+from pathlib import Path
+import shutil
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from config import settings
-from graph import run_workflow
+from graph import (
+    ARCHITECT_APPROVED,
+    ARCHITECT_REJECTED,
+    PENDING_ARCHITECT_APPROVAL,
+    PENDING_SME_APPROVAL,
+    SME_APPROVED,
+    SME_REJECTED,
+    run_workflow,
+    stream_workflow,
+)
+from utils.cache import AgentCache
 
 
 st.set_page_config(
@@ -26,6 +39,17 @@ MODEL_OPTIONS = [
     "gpt-4o-mini",
     "claude-sonnet-4-20250514",
     "claude-opus-4-1-20250805",
+]
+
+WORKFLOW_PHASES = [
+    ("reverse_legacy", "Reading legacy VB and SQL files"),
+    ("collate_legacy", "Collating legacy business flow"),
+    ("reverse_target", "Reading target code and SQL files"),
+    ("collate_target", "Collating target business flow"),
+    ("gap", "Analyzing migration gaps"),
+    ("requirements", "Drafting business requirements"),
+    ("technical_spec", "Drafting technical specification"),
+    ("forward_engineering", "Generating forward-engineered target artifacts"),
 ]
 
 
@@ -193,6 +217,17 @@ def render_metric_card(label: str, value: str, subtle: str) -> None:
     )
 
 
+def to_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
 def render_bullets(items: list, empty_message: str) -> None:
     if items:
         for item in items:
@@ -232,6 +267,8 @@ def sanitize_dataframe_for_display(dataframe: pd.DataFrame) -> pd.DataFrame:
 def build_nested_rows(items: list[dict], nested_key: str, parent_keys: list[str], child_prefix: str = "") -> list[dict]:
     rows: list[dict] = []
     for item in items:
+        if not isinstance(item, dict):
+            continue
         nested_items = item.get(nested_key, [])
         if not isinstance(nested_items, list):
             continue
@@ -270,17 +307,493 @@ def render_notes(items: list[Any]) -> None:
         )
 
 
-def render_phase_progress(logs: list[dict]) -> None:
-    phase_map = {
-        "reverse_legacy": "Legacy code and SQL reverse engineering",
-        "collate_legacy": "Legacy collation",
-        "reverse_target": "Target code and SQL reverse engineering",
-        "collate_target": "Target collation",
-        "gap": "Gap analysis",
+def create_run_trace_dir() -> Path:
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    run_dir = settings.outputs_dir / "runs" / timestamp
+    suffix = 1
+    while run_dir.exists():
+        suffix += 1
+        run_dir = settings.outputs_dir / "runs" / f"{timestamp}_{suffix}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def write_json_trace(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def write_run_trace_snapshot(run_dir: Path, state: dict, status: str) -> None:
+    logs = state.get("logs", [])
+    write_json_trace(run_dir / "workflow_log.json", {"status": status, "logs": logs})
+    write_json_trace(run_dir / "latest_state.json", {"status": status, "state": state})
+
+
+def finalize_run_trace(run_dir: Path, state: dict) -> None:
+    write_run_trace_snapshot(run_dir, state, "completed")
+    write_json_trace(run_dir / "final_state.json", state)
+
+
+def write_error_trace(run_dir: Path, error_message: str, state: dict) -> None:
+    write_run_trace_snapshot(run_dir, state, "failed")
+    write_json_trace(
+        run_dir / "error.json",
+        {
+            "error": error_message,
+            "logs": state.get("logs", []),
+            "state": state,
+        },
+    )
+
+
+def render_live_execution_status(log_placeholder, logs: list[dict]) -> None:
+    with log_placeholder.container():
+        st.markdown("**Live Execution Status**")
+        if not logs:
+            st.info("Waiting for the first workflow update...")
+            return
+        recent_logs = logs[-8:]
+        for entry in recent_logs:
+            st.markdown(
+                f"- `{entry.get('agent', 'system')}`: {entry.get('message', '')}"
+            )
+
+
+def deep_copy_document(document: dict | None) -> dict:
+    if not isinstance(document, dict):
+        return {}
+    return json.loads(json.dumps(document))
+
+
+def get_approval_status(document: dict | None, default_status: str) -> str:
+    if not isinstance(document, dict):
+        return default_status
+    approval = document.get("approval", {})
+    if not isinstance(approval, dict):
+        return default_status
+    status = approval.get("status", default_status)
+    return status if isinstance(status, str) and status else default_status
+
+
+def update_document_approval(document: dict | None, status: str, comments: str, reviewer_label: str) -> dict:
+    updated = deep_copy_document(document)
+    updated.setdefault("approval", {})
+    updated["approval"]["status"] = status
+    updated["approval"]["required_reviewer_role"] = reviewer_label
+    updated["approval"]["approved_by"] = reviewer_label if "APPROVED" in status else ""
+    updated["approval"]["approved_on"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    updated["approval"]["review_comments"] = comments
+    return updated
+
+
+def init_approval_state() -> None:
+    st.session_state.setdefault("approved_requirements", None)
+    st.session_state.setdefault("approved_technical_spec", None)
+    st.session_state.setdefault("sme_comments", "")
+    st.session_state.setdefault("architect_comments", "")
+    st.session_state.setdefault("auto_run_analysis", False)
+
+
+def sync_approval_state_from_result(result: dict) -> None:
+    requirements_draft = result.get("requirements_draft", {})
+    technical_spec_draft = result.get("technical_spec_draft", {})
+
+    approved_requirements = st.session_state.get("approved_requirements")
+    if approved_requirements is None and get_approval_status(requirements_draft, PENDING_SME_APPROVAL) == SME_APPROVED:
+        st.session_state["approved_requirements"] = deep_copy_document(requirements_draft)
+
+    approved_technical_spec = st.session_state.get("approved_technical_spec")
+    if approved_technical_spec is None and get_approval_status(technical_spec_draft, PENDING_ARCHITECT_APPROVAL) == ARCHITECT_APPROVED:
+        st.session_state["approved_technical_spec"] = deep_copy_document(technical_spec_draft)
+
+
+def render_approval_summary(label: str, status: str, comments: str) -> None:
+    st.markdown(f"**{label} Status:** `{status}`")
+    if comments.strip():
+        st.caption(f"Review comments: {comments.strip()}")
+
+
+def filter_country_specific_requirements(functional_requirements: list[dict]) -> list[dict]:
+    return [
+        item
+        for item in functional_requirements
+        if isinstance(item, dict) and str(item.get("id", "")).startswith("FR-COUNTRY")
+    ]
+
+
+def filter_country_specific_technical_design(technical_spec_draft: dict) -> dict[str, list[dict]]:
+    country_requirement_ids = {
+        str(item.get("id", ""))
+        for item in filter_country_specific_requirements(technical_spec_draft.get("source_requirements", []))
+        if isinstance(item, dict)
     }
+    if not country_requirement_ids:
+        for section_name in (
+            "ui_design",
+            "api_design",
+            "service_design",
+            "data_design",
+            "rule_configuration_design",
+            "validation_design",
+            "security_and_compliance_design",
+        ):
+            for item in technical_spec_draft.get(section_name, []):
+                if not isinstance(item, dict):
+                    continue
+                related = item.get("related_requirement_ids", [])
+                if isinstance(related, list):
+                    for requirement_id in related:
+                        requirement_id_text = str(requirement_id)
+                        if requirement_id_text.startswith("FR-COUNTRY"):
+                            country_requirement_ids.add(requirement_id_text)
+
+    def _filter(section_name: str) -> list[dict]:
+        results: list[dict] = []
+        for item in technical_spec_draft.get(section_name, []):
+            if not isinstance(item, dict):
+                continue
+            related = item.get("related_requirement_ids", [])
+            if isinstance(related, list) and any(str(req_id) in country_requirement_ids for req_id in related):
+                results.append(item)
+        return results
+
+    return {
+        "ui_design": _filter("ui_design"),
+        "api_design": _filter("api_design"),
+        "service_design": _filter("service_design"),
+        "data_design": _filter("data_design"),
+        "rule_configuration_design": _filter("rule_configuration_design"),
+        "validation_design": _filter("validation_design"),
+        "security_and_compliance_design": _filter("security_and_compliance_design"),
+    }
+
+
+def render_requirements_document(requirements_draft: dict) -> None:
+    if not requirements_draft:
+        st.info("Requirements draft will appear after analysis runs.")
+        return
+
+    st.markdown("**Overview**")
+    st.write(requirements_draft.get("business_context", "No business context available."))
+
+    top1, top2, top3 = st.columns(3)
+    top1.metric("Functional", len(requirements_draft.get("functional_requirements", [])))
+    top2.metric("Open SME Questions", len(requirements_draft.get("open_questions_for_sme", [])))
+    top3.metric("Compliance", len(requirements_draft.get("compliance_requirements", [])))
+    summary_tab, functional_tab, supporting_tab, approval_tab = st.tabs(
+        ["Summary", "Functional Requirements", "Supporting Requirements", "Approval"]
+    )
+
+    with summary_tab:
+        st.markdown("**Screen Name**")
+        st.write(requirements_draft.get("screen_name", ""))
+        st.markdown("**Assumptions**")
+        render_table(requirements_draft.get("assumptions", []), "No assumptions recorded.")
+        st.markdown("**Open Questions For SME**")
+        render_table(requirements_draft.get("open_questions_for_sme", []), "No open questions recorded.")
+        st.markdown("**Review Notes**")
+        render_table(requirements_draft.get("review_notes", []), "No review notes recorded.")
+
+    with functional_tab:
+        render_table(requirements_draft.get("functional_requirements", []), "No functional requirements generated.")
+
+    with supporting_tab:
+        st.markdown("**Non-Functional Requirements**")
+        render_table(requirements_draft.get("non_functional_requirements", []), "No non-functional requirements generated.")
+        st.markdown("**Compliance Requirements**")
+        render_table(requirements_draft.get("compliance_requirements", []), "No compliance requirements generated.")
+        st.markdown("**Data Requirements**")
+        render_table(requirements_draft.get("data_requirements", []), "No data requirements generated.")
+        st.markdown("**UI Requirements**")
+        render_table(requirements_draft.get("ui_requirements", []), "No UI requirements generated.")
+        st.markdown("**API Requirements**")
+        render_table(requirements_draft.get("api_requirements", []), "No API requirements generated.")
+        st.markdown("**Migration Requirements**")
+        render_table(requirements_draft.get("migration_requirements", []), "No migration requirements generated.")
+
+    with approval_tab:
+        render_table(requirements_draft.get("approval", {}), "No approval metadata available.")
+
+
+def render_technical_spec_document(technical_spec_draft: dict) -> None:
+    if not technical_spec_draft:
+        st.info("Technical specification draft will appear after SME approval and the next analysis run.")
+        return
+
+    st.markdown("**Overview**")
+    st.write(f"Target stack: {json.dumps(technical_spec_draft.get('target_stack', {}), ensure_ascii=False)}")
+
+    top1, top2, top3 = st.columns(3)
+    top1.metric("UI Design", len(technical_spec_draft.get("ui_design", [])))
+    top2.metric("API Design", len(technical_spec_draft.get("api_design", [])))
+    top3.metric("Architect Questions", len(technical_spec_draft.get("open_questions_for_architect", [])))
+
+    summary_tab, design_tab, review_tab = st.tabs(["Summary", "Design Details", "Approval"])
+
+    with summary_tab:
+        st.markdown("**Screen Name**")
+        st.write(technical_spec_draft.get("screen_name", ""))
+        st.markdown("**Target Stack**")
+        render_table(technical_spec_draft.get("target_stack", {}), "No stack details available.")
+        st.markdown("**Assumptions**")
+        render_table(technical_spec_draft.get("assumptions", []), "No assumptions recorded.")
+        st.markdown("**Open Questions For Architect**")
+        render_table(technical_spec_draft.get("open_questions_for_architect", []), "No architect questions recorded.")
+        st.markdown("**Review Notes**")
+        render_table(technical_spec_draft.get("review_notes", []), "No review notes recorded.")
+
+    with design_tab:
+        st.markdown("**UI Design**")
+        render_table(technical_spec_draft.get("ui_design", []), "No UI design generated.")
+        st.markdown("**API Design**")
+        render_table(technical_spec_draft.get("api_design", []), "No API design generated.")
+        st.markdown("**Service Design**")
+        render_table(technical_spec_draft.get("service_design", []), "No service design generated.")
+        st.markdown("**Data Design**")
+        render_table(technical_spec_draft.get("data_design", []), "No data design generated.")
+        st.markdown("**Rule Configuration Design**")
+        render_table(technical_spec_draft.get("rule_configuration_design", []), "No rule configuration design generated.")
+        st.markdown("**Validation Design**")
+        render_table(technical_spec_draft.get("validation_design", []), "No validation design generated.")
+        st.markdown("**Security And Compliance Design**")
+        render_table(
+            technical_spec_draft.get("security_and_compliance_design", []),
+            "No security and compliance design generated.",
+        )
+        st.markdown("**Integration Design**")
+        render_table(technical_spec_draft.get("integration_design", []), "No integration design generated.")
+
+    with review_tab:
+        render_table(technical_spec_draft.get("approval", {}), "No approval metadata available.")
+
+
+def render_forward_engineering_document(output: dict) -> None:
+    if not output:
+        st.info("Forward engineering output will appear after architect approval and the next analysis run.")
+        return
+
+    top1, top2, top3, top4 = st.columns(4)
+    top1.metric("Angular Files", len(output.get("angular_files", [])))
+    top2.metric("Node.js Files", len(output.get("nodejs_files", [])))
+    top3.metric("PostgreSQL Files", len(output.get("postgres_files", [])))
+    top4.metric("Test Cases", len(output.get("test_cases", [])))
+
+    files_tab, tests_tab, notes_tab = st.tabs(["Generated Files", "Test Cases", "Notes"])
+
+    with files_tab:
+        st.markdown("**Angular Files**")
+        render_table(output.get("angular_files", []), "No Angular files generated.")
+        st.markdown("**Node.js Files**")
+        render_table(output.get("nodejs_files", []), "No Node.js files generated.")
+        st.markdown("**PostgreSQL Files**")
+        render_table(output.get("postgres_files", []), "No PostgreSQL files generated.")
+
+    with tests_tab:
+        render_table(output.get("test_cases", []), "No test cases generated.")
+
+    with notes_tab:
+        st.markdown("**Generation Notes**")
+        render_table(output.get("generation_notes", []), "No generation notes available.")
+        st.markdown("**Traceability Summary**")
+        render_table(output.get("traceability_summary", []), "No traceability summary available.")
+
+
+def get_generated_target_root() -> Path:
+    return settings.outputs_dir / "forward_engineering" / "target_candidate"
+
+
+def build_generated_artifact_path(group_name: str, file_name: str) -> Path:
+    root = get_generated_target_root()
+    safe_name = Path(file_name).name
+    if group_name == "angular_files":
+        return root / "frontend" / "src" / "app" / "quote-generation" / safe_name
+    if group_name == "nodejs_files":
+        return root / "backend" / "src" / safe_name
+    return root / "sql" / safe_name
+
+
+def materialize_forward_engineering_output(output: dict) -> dict:
+    cache = AgentCache(settings.cache_dir)
+    if settings.cache_enabled:
+        cached = cache.load("forward_engineering_ui", output)
+        if cached:
+            generated_root = Path(cached.get("generated_root", ""))
+            generated_files = cached.get("generated_files", [])
+            if generated_root.exists() and all(Path(item.get("generated_path", "")).exists() for item in generated_files):
+                return cached
+
+    generated_root = get_generated_target_root()
+    if generated_root.exists():
+        shutil.rmtree(generated_root)
+    generated_root.mkdir(parents=True, exist_ok=True)
+
+    generated_files: list[dict] = []
+    for group_name in ("angular_files", "nodejs_files", "postgres_files"):
+        for item in output.get(group_name, []):
+            file_name = item.get("file_name", "")
+            if not file_name:
+                continue
+            destination = build_generated_artifact_path(group_name, file_name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(item.get("content", ""), encoding="utf-8")
+            generated_files.append(
+                {
+                    "group": group_name,
+                    "file_name": file_name,
+                    "generated_path": str(destination),
+                    "purpose": item.get("purpose", ""),
+                    "related_requirement_ids": item.get("related_requirement_ids", []),
+                    "content": item.get("content", ""),
+                }
+            )
+
+    materialized = {"generated_root": str(generated_root), "generated_files": generated_files}
+    if settings.cache_enabled:
+        cache.save("forward_engineering_ui", output, materialized)
+    return materialized
+
+
+def find_matching_target_file(file_name: str, search_roots: list[str]) -> Path | None:
+    for root in search_roots:
+        root_path = Path(root)
+        if not root_path.exists():
+            continue
+        direct_path = root_path / file_name
+        if direct_path.exists():
+            return direct_path
+        matches = list(root_path.rglob(file_name))
+        if matches:
+            return matches[0]
+    return None
+
+
+def build_forward_engineering_comparison(generated_files: list[dict], target_code_folder: str, target_sql_folder: str) -> list[dict]:
+    search_roots = [target_code_folder, target_sql_folder]
+    comparisons: list[dict] = []
+
+    for item in generated_files:
+        file_name = item.get("file_name", "")
+        generated_content = item.get("content", "")
+        original_path = find_matching_target_file(file_name, search_roots)
+        original_content = original_path.read_text(encoding="utf-8") if original_path else ""
+        if not original_path:
+            status = "Added"
+        elif original_content == generated_content:
+            status = "Unchanged"
+        else:
+            status = "Modified"
+
+        diff_text = "\n".join(
+            difflib.unified_diff(
+                original_content.splitlines(),
+                generated_content.splitlines(),
+                fromfile=f"original/{file_name}",
+                tofile=f"generated/{file_name}",
+                lineterm="",
+            )
+        )
+
+        comparisons.append(
+            {
+                **item,
+                "status": status,
+                "original_path": str(original_path) if original_path else "",
+                "original_content": original_content,
+                "diff_text": diff_text,
+            }
+        )
+
+    return comparisons
+
+
+def render_forward_engineering_summary(output: dict, comparison_items: list[dict], generated_root: str) -> None:
+    if not output:
+        st.info("Forward engineering output will appear after architect approval and the next analysis run.")
+        return
+
+    added_count = sum(1 for item in comparison_items if item.get("status") == "Added")
+    modified_count = sum(1 for item in comparison_items if item.get("status") == "Modified")
+    unchanged_count = sum(1 for item in comparison_items if item.get("status") == "Unchanged")
+
+    top1, top2, top3, top4 = st.columns(4)
+    top1.metric("Added Files", added_count)
+    top2.metric("Modified Files", modified_count)
+    top3.metric("Unchanged Files", unchanged_count)
+    top4.metric("Total Generated", str(len(comparison_items)))
+
+    st.caption(f"Generated target candidate path: {generated_root}")
+
+    summary_tab, files_tab, tests_tab, notes_tab = st.tabs(["Change Summary", "Generated Files", "Test Cases", "Notes"])
+
+    with summary_tab:
+        summary_rows = [
+            {
+                "status": item.get("status", ""),
+                "file_name": item.get("file_name", ""),
+                "purpose": item.get("purpose", ""),
+                "generated_path": item.get("generated_path", ""),
+                "original_path": item.get("original_path", ""),
+            }
+            for item in comparison_items
+        ]
+        render_table(summary_rows, "No generated files available.")
+
+    with files_tab:
+        st.markdown("**Angular Files**")
+        render_table(output.get("angular_files", []), "No Angular files generated.")
+        st.markdown("**Node.js Files**")
+        render_table(output.get("nodejs_files", []), "No Node.js files generated.")
+        st.markdown("**PostgreSQL Files**")
+        render_table(output.get("postgres_files", []), "No PostgreSQL files generated.")
+
+    with tests_tab:
+        render_table(output.get("test_cases", []), "No test cases generated.")
+
+    with notes_tab:
+        st.markdown("**Generation Notes**")
+        render_table(output.get("generation_notes", []), "No generation notes available.")
+        st.markdown("**Traceability Summary**")
+        render_table(output.get("traceability_summary", []), "No traceability summary available.")
+
+
+def render_forward_engineering_proof(comparison_items: list[dict]) -> None:
+    if not comparison_items:
+        st.info("Forward engineering proof will appear after forward engineering generates files.")
+        return
+
+    file_options = [item.get("file_name", f"generated_{index}") for index, item in enumerate(comparison_items, start=1)]
+    selected_file = st.selectbox("Generated artifact", options=file_options, key="forward_proof_file")
+    selected_artifact = next((item for item in comparison_items if item.get("file_name") == selected_file), {})
+
+    generated_content = selected_artifact.get("content", "")
+    original_path_value = selected_artifact.get("original_path", "")
+    original_path = Path(original_path_value) if original_path_value else None
+    original_content = selected_artifact.get("original_content", "")
+
+    original_tab, generated_tab, diff_tab = st.tabs(["Original", "Generated", "Diff"])
+    with original_tab:
+        if original_path:
+            st.caption(f"Matched target file: {original_path}")
+            st.code(original_content, language="text")
+        else:
+            st.info("No matching target file found for this generated artifact.")
+
+    with generated_tab:
+        st.code(generated_content, language="text")
+
+    with diff_tab:
+        if original_path:
+            diff_text = selected_artifact.get("diff_text", "")
+            st.code(diff_text or "No differences detected.", language="diff")
+        else:
+            st.info("Diff is unavailable because no original target file match was found.")
+
+
+def render_phase_progress(logs: list[dict]) -> None:
+    phase_map = dict(WORKFLOW_PHASES)
     seen = {entry.get("agent") for entry in logs}
-    completed = sum(1 for key in phase_map if key in seen)
-    progress = completed / len(phase_map)
+    completed = sum(1 for key, _label in WORKFLOW_PHASES if key in seen)
+    progress = completed / len(WORKFLOW_PHASES)
     st.progress(progress, text=f"Workflow completion: {int(progress * 100)}%")
 
     cols = st.columns(len(phase_map))
@@ -307,7 +820,7 @@ def render_spec(spec: dict, title: str) -> None:
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Fields", len(spec.get("fields", [])))
-    col2.metric("Business Rules", len(spec.get("business_rules", [])))
+    col2.metric("Common Rules", len(spec.get("business_rules", [])))
     col3.metric("Validations", len(spec.get("validations", [])))
     col4.metric("Calculations", len(spec.get("calculations", [])))
     st.markdown("</div>", unsafe_allow_html=True)
@@ -322,7 +835,7 @@ def render_spec(spec: dict, title: str) -> None:
         structure_tab,
         notes_tab,
     ) = st.tabs(
-        ["Summary", "Fields", "Business Rules", "Country Rules", "Validations", "Calculations", "Structure", "Notes"]
+        ["Summary", "Fields", "Common Rules", "Country-Specific Rules", "Validations", "Calculations", "Structure", "Notes"]
     )
 
     with summary_tab:
@@ -337,7 +850,7 @@ def render_spec(spec: dict, title: str) -> None:
         render_table(spec.get("fields", []), "No fields extracted.")
 
     with rules_tab:
-        render_table(spec.get("business_rules", []), "No business rules extracted.")
+        render_table(spec.get("business_rules", []), "No common rules extracted.")
 
     with country_tab:
         render_table(spec.get("country_specific_rules", []), "No country-specific rules extracted.")
@@ -395,11 +908,13 @@ def render_spec(spec: dict, title: str) -> None:
 
 
 def render_gap(gap_analysis: dict) -> None:
-    confidence = gap_analysis.get("confidence", {}).get("gap_confidence", 0.0)
+    confidence = to_float(gap_analysis.get("confidence", {}).get("gap_confidence", 0.0))
     missing_features = gap_analysis.get("missing_features", [])
     incorrect_implementations = gap_analysis.get("incorrect_implementations", [])
     compliance_gaps = gap_analysis.get("compliance_gaps", [])
     risks = gap_analysis.get("risks", [])
+    common_rules_missed = gap_analysis.get("common_rules_missed", [])
+    country_specific_rules_missed = gap_analysis.get("country_specific_rules_missed", [])
 
     top1, top2, top3, top4 = st.columns(4)
     with top1:
@@ -411,7 +926,7 @@ def render_gap(gap_analysis: dict) -> None:
     with top4:
         render_metric_card("Implementation Issues", str(len(incorrect_implementations)), "Potential parity defects")
 
-    summary_tab, comparison_tab, confidence_tab = st.tabs(["Gap Summary", "Rule Comparison", "Confidence"])
+    summary_tab, missed_rules_tab, comparison_tab, confidence_tab = st.tabs(["Gap Summary", "Rules Missed", "Rule Comparison", "Confidence"])
 
     with summary_tab:
         col1, col2 = st.columns(2)
@@ -441,11 +956,18 @@ def render_gap(gap_analysis: dict) -> None:
                 render_bullets(risks, "No risks detected.")
             st.markdown("</div>", unsafe_allow_html=True)
 
+    with missed_rules_tab:
+        common_tab, country_tab = st.tabs(["Common Rules Missed", "Country-Specific Rules Missed"])
+        with common_tab:
+            render_table(common_rules_missed, "No common rules missed were identified.")
+        with country_tab:
+            render_table(country_specific_rules_missed, "No country-specific rules missed were identified.")
+
     with comparison_tab:
         comparison_df = normalize_for_table(gap_analysis.get("rule_comparison", []))
         if not comparison_df.empty and "confidence" in comparison_df.columns:
             comparison_df["confidence"] = comparison_df["confidence"].map(
-                lambda value: f"{value:.0%}" if isinstance(value, (int, float)) else value
+                lambda value: f"{to_float(value):.0%}" if value not in (None, "") else value
             )
         if comparison_df.empty:
             st.info("No rule comparison data available.")
@@ -577,8 +1099,8 @@ def render_step_outputs(result: dict) -> None:
 
 
 def render_comparison(collated: dict, gap_analysis: dict) -> None:
-    domains_tab, differences_tab, focus_tab, rules_tab = st.tabs(
-        ["Shared Domains", "Key Differences", "Focus Areas", "Rule Comparison"]
+    domains_tab, differences_tab, focus_tab, common_rules_tab, country_rules_tab, rules_tab = st.tabs(
+        ["Shared Domains", "Key Differences", "Focus Areas", "Common Rules Missed", "Country Rules Missed", "Rule Comparison"]
     )
 
     with domains_tab:
@@ -590,16 +1112,23 @@ def render_comparison(collated: dict, gap_analysis: dict) -> None:
     with focus_tab:
         render_table(collated.get("modernization_focus_areas", []), "No focus areas available.")
 
+    with common_rules_tab:
+        render_table(gap_analysis.get("common_rules_missed", []), "No common rules missed available.")
+
+    with country_rules_tab:
+        render_table(gap_analysis.get("country_specific_rules_missed", []), "No country-specific rules missed available.")
+
     with rules_tab:
         render_table(gap_analysis.get("rule_comparison", []), "No rule comparison available.")
 
 
 def main() -> None:
     apply_enterprise_theme()
+    init_approval_state()
     st.title("AI Modernization Platform")
     st.caption("Reverse engineer legacy and target insurance systems, collate structured specs, and highlight migration gaps.")
 
-    default_legacy_code = str(settings.sample_inputs_dir / "legacy" / "quote_generation")
+    default_legacy_code = str(settings.sample_inputs_dir / "legacy" / "quote_generation" / "vb_code")
     default_legacy_sql = str(settings.sample_inputs_dir / "legacy" / "quote_generation" / "sql")
     default_target_code = str(settings.sample_inputs_dir / "target" / "quote_generation")
     default_target_sql = str(settings.sample_inputs_dir / "target" / "quote_generation" / "sql")
@@ -612,12 +1141,12 @@ def main() -> None:
         legacy_code_folder = st.text_input(
             "Legacy source code root",
             value=default_legacy_code,
-            help="Point this to the legacy code root. The code reverse pass will read VB/VB.NET files and ignore SQL.",
+            help="Point this to the legacy VB code folder. The code reverse pass reads VB/VB.NET files from `vb_code` and ignores SQL.",
         )
         legacy_sql_folder = st.text_input(
             "Legacy SQL folder",
             value=default_legacy_sql,
-            help="Point this to the legacy SQL folder only.",
+            help="Point this to the legacy SQL folder only. This is reverse engineered separately from the VB code pass.",
         )
         st.markdown("### Target Inputs")
         target_code_folder = st.text_input(
@@ -635,7 +1164,11 @@ def main() -> None:
             options=model_options,
             index=model_options.index(settings.model),
         )
-        cache_enabled = st.toggle("Caching", value=settings.cache_enabled)
+        cache_enabled = st.toggle(
+            "Caching",
+            value=settings.cache_enabled,
+            help="Controls cache reuse for reverse engineering, gap analysis, requirements, technical specification, forward engineering, and generated target-candidate outputs.",
+        )
         run_clicked = st.button("Run Modernization Analysis", type="primary", use_container_width=True)
         st.markdown("### Workflow")
         st.markdown("- Reverse legacy source code")
@@ -651,6 +1184,7 @@ def main() -> None:
 
     settings.model = selected_model
     settings.cache_enabled = cache_enabled
+    auto_run_analysis = st.session_state.pop("auto_run_analysis", False)
 
     intro_col, stat_col = st.columns([2, 1])
     with intro_col:
@@ -685,31 +1219,69 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-    if run_clicked:
+    if run_clicked or auto_run_analysis:
         st.session_state.pop("analysis_error", None)
+        st.session_state.pop("analysis_trace_dir", None)
         progress_placeholder = st.empty()
         status_placeholder = st.empty()
+        live_logs_placeholder = st.empty()
+        trace_dir = create_run_trace_dir()
+        st.session_state["analysis_trace_dir"] = str(trace_dir)
         try:
             progress_bar = progress_placeholder.progress(0, text="Initializing modernization workflow...")
             status_placeholder.info("Preparing artifact discovery and analysis context.")
-            progress_bar.progress(20, text="Loading source folders and building execution plan...")
-            progress_bar.progress(45, text="Reverse engineering source code and SQL for both systems...")
-            result = run_workflow(
+            write_json_trace(
+                trace_dir / "run_context.json",
+                {
+                    "started_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "legacy_code_folder": legacy_code_folder,
+                    "legacy_sql_folder": legacy_sql_folder,
+                    "target_code_folder": target_code_folder,
+                    "target_sql_folder": target_sql_folder,
+                    "model": settings.model,
+                    "cache_enabled": settings.cache_enabled,
+                },
+            )
+            result: dict = {}
+            for partial_state in stream_workflow(
                 legacy_code_folder=legacy_code_folder,
                 legacy_sql_folder=legacy_sql_folder,
                 target_code_folder=target_code_folder,
                 target_sql_folder=target_sql_folder,
-            )
-            progress_bar.progress(80, text="Formatting findings, confidence scores, and comparison outputs...")
+                approved_requirements=st.session_state.get("approved_requirements"),
+                approved_technical_spec=st.session_state.get("approved_technical_spec"),
+                prior_state=st.session_state.get("analysis_result") if auto_run_analysis else None,
+            ):
+                result = partial_state
+                write_run_trace_snapshot(trace_dir, partial_state, "running")
+                logs = partial_state.get("logs", [])
+                render_live_execution_status(live_logs_placeholder, logs)
+                seen = {entry.get("agent") for entry in logs}
+                completed = sum(1 for key, _label in WORKFLOW_PHASES if key in seen)
+                progress_value = completed / len(WORKFLOW_PHASES)
+                current_label = "Building execution plan"
+                for key, label in WORKFLOW_PHASES:
+                    if key not in seen:
+                        current_label = label
+                        break
+                if logs:
+                    status_placeholder.info(logs[-1].get("message", current_label))
+                progress_bar.progress(progress_value, text=f"{current_label}...")
+
             st.session_state["analysis_result"] = result
+            sync_approval_state_from_result(result)
+            finalize_run_trace(trace_dir, result)
             progress_bar.progress(100, text="Analysis complete.")
-            status_placeholder.success("Modernization analysis completed successfully.")
+            status_placeholder.success(f"Modernization analysis completed successfully. Trace saved to {trace_dir}")
         except Exception as exc:
             st.session_state["analysis_error"] = str(exc)
-            status_placeholder.error("Analysis failed. Review the error message below.")
+            write_error_trace(trace_dir, str(exc), result if "result" in locals() else {})
+            status_placeholder.error(f"Analysis failed. Trace saved to {trace_dir}")
 
     if st.session_state.get("analysis_error"):
         st.error(st.session_state["analysis_error"])
+    if st.session_state.get("analysis_trace_dir"):
+        st.caption(f"Run trace folder: {st.session_state['analysis_trace_dir']}")
 
     result = st.session_state.get("analysis_result")
     if not result:
@@ -717,22 +1289,79 @@ def main() -> None:
         st.write("Use the sample folders or point the app at separate source-code and SQL folders for legacy and target systems.")
         return
 
+    sync_approval_state_from_result(result)
+
+    requirements_draft = deep_copy_document(result.get("requirements_draft", {}))
+    technical_spec_draft = deep_copy_document(result.get("technical_spec_draft", {}))
+    approved_requirements = st.session_state.get("approved_requirements")
+    approved_technical_spec = st.session_state.get("approved_technical_spec")
+
+    if approved_requirements:
+        result["approved_requirements"] = approved_requirements
+        result["requirements_draft"] = approved_requirements
+        requirements_draft = deep_copy_document(approved_requirements)
+    if approved_technical_spec:
+        result["approved_technical_spec"] = approved_technical_spec
+        result["technical_spec_draft"] = approved_technical_spec
+        technical_spec_draft = deep_copy_document(approved_technical_spec)
+
+    requirements_status = get_approval_status(requirements_draft, PENDING_SME_APPROVAL)
+    technical_spec_status = get_approval_status(technical_spec_draft, PENDING_ARCHITECT_APPROVAL)
+    generated_target = {"generated_root": "", "generated_files": []}
+    forward_comparison_items: list[dict] = []
+    if result.get("forward_engineering_output"):
+        generated_target = materialize_forward_engineering_output(result.get("forward_engineering_output", {}))
+        forward_comparison_items = build_forward_engineering_comparison(
+            generated_target.get("generated_files", []),
+            target_code_folder,
+            target_sql_folder,
+        )
+
     render_phase_progress(result.get("logs", []))
 
-    overview_tab, step_outputs_tab, legacy_tab, target_tab, flow_tab, comparison_tab, gap_tab, logs_tab, raw_tab = st.tabs(
-        ["Overview", "Step Outputs", "Legacy Spec", "Target Spec", "Flow Maps", "Comparison", "Gap Analysis", "Execution Logs", "Raw JSON"]
+    (
+        overview_tab,
+        step_outputs_tab,
+        legacy_tab,
+        target_tab,
+        flow_tab,
+        comparison_tab,
+        gap_tab,
+        requirements_tab,
+        technical_spec_tab,
+        forward_engineering_tab,
+        forward_proof_tab,
+        logs_tab,
+        raw_tab,
+    ) = st.tabs(
+        [
+            "Overview",
+            "Step Outputs",
+            "Legacy Spec",
+            "Target Spec",
+            "Flow Maps",
+            "Comparison",
+            "Gap Analysis",
+            "Requirements Draft",
+            "Technical Specification Draft",
+            "Forward Engineering",
+            "Forward Engineering Proof",
+            "Execution Logs",
+            "Raw JSON",
+        ]
     )
 
     with overview_tab:
         gap_analysis = result.get("gap_analysis", {})
         collated = result.get("collated_spec", {})
+        overview_gap_confidence = to_float(gap_analysis.get("confidence", {}).get("gap_confidence", 0.0))
         top1, top2, top3 = st.columns(3)
         with top1:
             render_metric_card("Missing Features", str(len(gap_analysis.get("missing_features", []))), "Feature parity shortfalls")
         with top2:
             render_metric_card("Compliance Gaps", str(len(gap_analysis.get("compliance_gaps", []))), "Regulatory exposures detected")
         with top3:
-            render_metric_card("Gap Confidence", f"{gap_analysis.get('confidence', {}).get('gap_confidence', 0.0):.0%}", "Confidence in assessment quality")
+            render_metric_card("Gap Confidence", f"{overview_gap_confidence:.0%}", "Confidence in assessment quality")
 
         st.markdown("**Modernization Focus Areas**")
         render_table(collated.get("modernization_focus_areas", []), "No focus areas available.")
@@ -760,6 +1389,120 @@ def main() -> None:
 
     with gap_tab:
         render_gap(result.get("gap_analysis", {}))
+
+    with requirements_tab:
+        render_requirements_document(requirements_draft)
+        st.markdown("**SME Review Controls**")
+        render_approval_summary("Requirements", requirements_status, st.session_state.get("sme_comments", ""))
+        st.text_area(
+            "SME comments",
+            key="sme_comments",
+            height=120,
+            placeholder="Capture SME review notes for the requirements draft.",
+        )
+        approve_col, reject_col = st.columns(2)
+        with approve_col:
+            if st.button("Approve Requirements", use_container_width=True):
+                if requirements_draft:
+                    approved_doc = update_document_approval(
+                        requirements_draft,
+                        SME_APPROVED,
+                        st.session_state.get("sme_comments", ""),
+                        "SME",
+                    )
+                    st.session_state["approved_requirements"] = approved_doc
+                    st.session_state["approved_technical_spec"] = None
+                    st.session_state["analysis_result"]["requirements_draft"] = approved_doc
+                    st.session_state["auto_run_analysis"] = True
+                    st.success("Requirements approved. Continuing automatically to technical specification generation.")
+                    st.rerun()
+                else:
+                    st.warning("No requirements draft is available yet.")
+        with reject_col:
+            if st.button("Reject Requirements", use_container_width=True):
+                if requirements_draft:
+                    rejected_doc = update_document_approval(
+                        requirements_draft,
+                        SME_REJECTED,
+                        st.session_state.get("sme_comments", ""),
+                        "SME",
+                    )
+                    st.session_state["approved_requirements"] = None
+                    st.session_state["approved_technical_spec"] = None
+                    st.session_state["analysis_result"]["requirements_draft"] = rejected_doc
+                    st.warning("Requirements rejected. Run the analysis again to regenerate the draft.")
+                    st.rerun()
+                else:
+                    st.warning("No requirements draft is available yet.")
+
+    with technical_spec_tab:
+        if requirements_status != SME_APPROVED:
+            st.info("Technical specification is blocked until the requirements draft is SME approved.")
+        else:
+            render_technical_spec_document(technical_spec_draft)
+
+        st.markdown("**Architect Review Controls**")
+        render_approval_summary("Technical Specification", technical_spec_status, st.session_state.get("architect_comments", ""))
+        st.text_area(
+            "Architect comments",
+            key="architect_comments",
+            height=120,
+            placeholder="Capture architect review notes for the technical specification draft.",
+        )
+        approve_arch_col, reject_arch_col = st.columns(2)
+        with approve_arch_col:
+            if st.button("Approve Technical Spec", use_container_width=True):
+                if requirements_status != SME_APPROVED:
+                    st.warning("Approve the requirements draft first.")
+                elif technical_spec_draft:
+                    approved_doc = update_document_approval(
+                        technical_spec_draft,
+                        ARCHITECT_APPROVED,
+                        st.session_state.get("architect_comments", ""),
+                        "Architect",
+                    )
+                    st.session_state["approved_technical_spec"] = approved_doc
+                    st.session_state["analysis_result"]["technical_spec_draft"] = approved_doc
+                    st.session_state["auto_run_analysis"] = True
+                    st.success("Technical specification approved. Continuing automatically to forward engineering generation.")
+                    st.rerun()
+                else:
+                    st.warning("No technical specification draft is available yet. Run the analysis after SME approval.")
+        with reject_arch_col:
+            if st.button("Reject Technical Spec", use_container_width=True):
+                if technical_spec_draft:
+                    rejected_doc = update_document_approval(
+                        technical_spec_draft,
+                        ARCHITECT_REJECTED,
+                        st.session_state.get("architect_comments", ""),
+                        "Architect",
+                    )
+                    st.session_state["approved_technical_spec"] = None
+                    st.session_state["analysis_result"]["technical_spec_draft"] = rejected_doc
+                    st.warning("Technical specification rejected. Run the analysis again to regenerate the draft.")
+                    st.rerun()
+                else:
+                    st.warning("No technical specification draft is available yet.")
+
+    with forward_engineering_tab:
+        if requirements_status != SME_APPROVED:
+            st.info("Forward engineering is blocked until the requirements draft is SME approved.")
+        elif technical_spec_status != ARCHITECT_APPROVED:
+            st.info("Forward engineering is blocked until the technical specification is architect approved.")
+        else:
+            render_forward_engineering_summary(
+                result.get("forward_engineering_output", {}),
+                forward_comparison_items,
+                generated_target.get("generated_root", ""),
+            )
+
+    with forward_proof_tab:
+        if requirements_status != SME_APPROVED:
+            st.info("Forward engineering proof is blocked until the requirements draft is SME approved.")
+        elif technical_spec_status != ARCHITECT_APPROVED:
+            st.info("Forward engineering proof is blocked until the technical specification is architect approved.")
+        else:
+            render_forward_engineering_proof(forward_comparison_items)
 
     with logs_tab:
         render_logs(result.get("logs", []))

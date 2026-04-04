@@ -1,0 +1,1 @@
+-- Mock PostgreSQL implementation artifact

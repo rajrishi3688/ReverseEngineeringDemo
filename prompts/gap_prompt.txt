@@ -7,6 +7,8 @@ Required top-level keys:
 - compliance_gaps
 - risks
 - rule_comparison
+- common_rules_missed
+- country_specific_rules_missed
 - confidence
 
 Objective:
@@ -66,13 +68,40 @@ Field expectations:
     - evidence
     - recommended_action
     - confidence
+- common_rules_missed:
+  - Must be an array of objects with:
+    - rule_id
+    - rule_name
+    - legacy_formula_or_logic
+    - target_formula_or_logic
+    - gap_summary
+    - business_impact
+    - evidence
+    - recommended_action
+- country_specific_rules_missed:
+  - Must be an array of objects with:
+    - country
+    - rule_id
+    - rule_name
+    - legacy_formula_or_logic
+    - target_formula_or_logic
+    - gap_summary
+    - business_impact
+    - evidence
+    - recommended_action
 
 Assessment guidance:
 - Prefer canonical comparisons over superficial wording matches.
 - Use the collated final specifications as the primary comparison source, not raw UI/database fragments.
 - Treat partial implementations as gaps when thresholds, formulas, conditions, sequencing, or exception handling differ materially.
 - Call out missing country-specific logic, missing consent enforcement, missing reference data, and missing audit controls when present.
+- Explicitly list common rules missed and country-specific rules missed in their dedicated sections.
+- When formulas, thresholds, rate tables, tax logic, pricing adjustments, or calculation logic are known, include the exact legacy formula or logic in `legacy_formula_or_logic` and the current target behavior in `target_formula_or_logic`.
+- If the exact formula is not fully recoverable, provide the most precise rule logic available from the evidence instead of a vague summary.
 - Include modernization-relevant risks such as regulatory exposure, premium leakage, claims leakage, operational defects, reconciliation issues, and poor traceability.
+- Write all descriptions, risks, and recommendations in business-readable language suitable for SMEs, architects, and transformation stakeholders.
+- Avoid code-heavy phrasing, internal implementation jargon, and file-level wording unless it is necessary as supporting evidence.
+- Explain the business impact of each gap clearly in terms of workflow, compliance, customer outcome, operational risk, or financial risk.
 
 Payload:
 {payload}

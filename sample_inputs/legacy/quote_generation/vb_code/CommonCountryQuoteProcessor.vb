@@ -1,16 +1,15 @@
-Imports LegacyModernization.QuoteGeneration.Backend.Contracts
 Imports LegacyModernization.QuoteGeneration.Backend.Data
 Imports LegacyModernization.QuoteGeneration.Backend.Models
 
 Namespace LegacyModernization.QuoteGeneration.Backend.Services
     Public Class CommonCountryQuoteProcessor
-        Private ReadOnly _strategy As ICountryQuoteStrategy
+        Private ReadOnly _countryRules As LegacyCountryRuleService
         Private ReadOnly _repository As New QuoteRepository()
         Private ReadOnly _referenceRepository As New ReferenceDataRepository()
         Private ReadOnly _auditRepository As New AuditRepository()
 
-        Public Sub New(strategy As ICountryQuoteStrategy)
-            _strategy = strategy
+        Public Sub New(countryRules As LegacyCountryRuleService)
+            _countryRules = countryRules
         End Sub
 
         Public Function ProcessQuote(request As QuoteRequest) As QuoteResult
@@ -20,8 +19,8 @@ Namespace LegacyModernization.QuoteGeneration.Backend.Services
 
             validationService.ValidateRequest(request)
 
-            Dim result = pricingService.CalculateQuote(request, _strategy)
-            persistenceService.PersistQuote(request, result, _strategy.BuildCountryNote(request))
+            Dim result = pricingService.CalculateQuote(request, _countryRules)
+            persistenceService.PersistQuote(request, result, _countryRules.BuildCountryNote(request))
             Return result
         End Function
     End Class

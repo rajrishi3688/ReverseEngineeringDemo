@@ -33,6 +33,7 @@ Synthesis instructions:
 - Reconstruct the overall business transaction flow from intake through validation, pricing, discounting, risk processing, tax handling, consent/compliance checks, persistence, audit, and response/output.
 - Combine UI findings and DB/procedure/API findings into a single operational view of how the system works.
 - Resolve duplicate or overlapping rules into canonical business rules where possible.
+- Keep common rules and country-specific rules in separate sections.
 - Highlight inferred transaction stages, orchestration steps, decision points, handoffs, and exception paths.
 - Treat this prompt as a system-specification consolidation step, not as the final gap-analysis step.
 
@@ -69,6 +70,8 @@ Source breakdown expectations:
 
 Priority lens:
 - Give special attention to building complete business specifications for:
+  - common rules
+  - country specific rules
   - user input capture and screen flow
   - validation and eligibility flow
   - premium, tax, discount, and risk calculations
@@ -76,6 +79,11 @@ Priority lens:
   - consent and compliance handling
   - audit and error handling
   - orchestration boundaries across UI, services, procedures, and database
+
+Rule separation requirements:
+- Use `business_rules` only for common rules that apply across countries or are not country-specific.
+- Use `country_specific_rules` only for behavior that changes by country, region, or market.
+- Do not duplicate the same rule in both sections unless the common rule and country-specific exception are clearly distinguished.
 
 Payload:
 {payload}

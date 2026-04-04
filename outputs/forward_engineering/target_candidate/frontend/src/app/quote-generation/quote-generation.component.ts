@@ -1,0 +1,1 @@
+// Mock Angular implementation artifact

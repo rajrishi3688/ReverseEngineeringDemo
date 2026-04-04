@@ -79,9 +79,23 @@ def normalize_gap_output(payload: dict[str, Any]) -> dict[str, Any]:
         "compliance_gaps": ensure_list(payload.get("compliance_gaps")),
         "risks": ensure_list(payload.get("risks")),
         "rule_comparison": ensure_list(payload.get("rule_comparison")),
+        "common_rules_missed": ensure_list(payload.get("common_rules_missed")),
+        "country_specific_rules_missed": ensure_list(payload.get("country_specific_rules_missed")),
         "confidence": {
             "gap_confidence": confidence.get("gap_confidence", 0.0),
             "coverage_of_analysis": confidence.get("coverage_of_analysis", {}),
             "notes": ensure_list(confidence.get("notes")),
         },
+    }
+
+
+def normalize_forward_engineering_output(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "document_type": payload.get("document_type", "forward_engineering_output"),
+        "angular_files": ensure_list(payload.get("angular_files")),
+        "nodejs_files": ensure_list(payload.get("nodejs_files")),
+        "postgres_files": ensure_list(payload.get("postgres_files")),
+        "test_cases": ensure_list(payload.get("test_cases")),
+        "generation_notes": ensure_list(payload.get("generation_notes")),
+        "traceability_summary": ensure_list(payload.get("traceability_summary")),
     }

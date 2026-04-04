@@ -1,0 +1,1 @@
+// Mock Node.js implementation artifact
