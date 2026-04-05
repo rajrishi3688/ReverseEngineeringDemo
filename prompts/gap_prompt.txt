@@ -1,107 +1,266 @@
 You are performing an enterprise migration gap assessment between a legacy insurance system and a target implementation.
+
 Return strict JSON only.
 
 Required top-level keys:
-- missing_features
-- incorrect_implementations
-- compliance_gaps
-- risks
-- rule_comparison
-- common_rules_missed
-- country_specific_rules_missed
-- confidence
+
+* missing_features
+* incorrect_implementations
+* compliance_gaps
+* risks
+* rule_comparison
+* common_rules_missed
+* country_specific_rules_missed
+* confidence
 
 Objective:
-- Compare the final consolidated legacy specification and final consolidated target specification.
-- Identify functional, control, compliance, and operational parity gaps that matter in a real modernization program.
+
+* Compare the final consolidated legacy specification and final consolidated target specification.
+* Identify functional, control, compliance, and operational parity gaps that matter in a real modernization program.
 
 Strict output rules:
-- Return a single valid JSON object only.
-- Do not include markdown or prose outside JSON.
-- All list fields must be present even if empty.
-- confidence must include:
-  - gap_confidence
-  - coverage_of_analysis
-  - notes
 
-Gap analysis focus:
-- Compare the consolidated legacy and target specifications for parity across:
-  - business capabilities
-  - workflow and lifecycle handling
-  - validations
-  - calculations
-  - discounts
-  - risk logic
-  - tax logic
-  - reference data usage
-  - compliance controls
-  - auditability
-  - persistence behavior
-  - exception handling
+* Return a single valid JSON object only.
+* Do not include markdown or prose outside JSON.
+* All list fields must be present even if empty.
+* confidence must include:
 
-Field expectations:
-- missing_features:
-  - Features or controls present in legacy but absent in target.
-- incorrect_implementations:
-  - Features that exist in both but differ materially in logic, thresholds, formulas, sequencing, or behavior.
-- compliance_gaps:
-  - Explicit regulatory, consent, privacy, audit, residency, or geographic control gaps.
-- risks:
-  - Each item should preferably be an object with:
-    - risk_name
-    - category
-    - severity
-    - description
-    - impacted_area
-    - likely_outcome
-    - mitigation_hint
-- rule_comparison:
-  - Must be an array of objects with:
-    - rule_id
-    - rule_name
-    - category
-    - legacy_status
-    - target_status
-    - gap_type
-    - risk_level
-    - description
-    - evidence
-    - recommended_action
-    - confidence
-- common_rules_missed:
-  - Must be an array of objects with:
-    - rule_id
-    - rule_name
-    - legacy_formula_or_logic
-    - target_formula_or_logic
-    - gap_summary
-    - business_impact
-    - evidence
-    - recommended_action
-- country_specific_rules_missed:
-  - Must be an array of objects with:
-    - country
-    - rule_id
-    - rule_name
-    - legacy_formula_or_logic
-    - target_formula_or_logic
-    - gap_summary
-    - business_impact
-    - evidence
-    - recommended_action
+  * gap_confidence
+  * coverage_of_analysis
+  * notes
 
-Assessment guidance:
-- Prefer canonical comparisons over superficial wording matches.
-- Use the collated final specifications as the primary comparison source, not raw UI/database fragments.
-- Treat partial implementations as gaps when thresholds, formulas, conditions, sequencing, or exception handling differ materially.
-- Call out missing country-specific logic, missing consent enforcement, missing reference data, and missing audit controls when present.
-- Explicitly list common rules missed and country-specific rules missed in their dedicated sections.
-- When formulas, thresholds, rate tables, tax logic, pricing adjustments, or calculation logic are known, include the exact legacy formula or logic in `legacy_formula_or_logic` and the current target behavior in `target_formula_or_logic`.
-- If the exact formula is not fully recoverable, provide the most precise rule logic available from the evidence instead of a vague summary.
-- Include modernization-relevant risks such as regulatory exposure, premium leakage, claims leakage, operational defects, reconciliation issues, and poor traceability.
-- Write all descriptions, risks, and recommendations in business-readable language suitable for SMEs, architects, and transformation stakeholders.
-- Avoid code-heavy phrasing, internal implementation jargon, and file-level wording unless it is necessary as supporting evidence.
-- Explain the business impact of each gap clearly in terms of workflow, compliance, customer outcome, operational risk, or financial risk.
+---
+
+## PRE-COMPARISON NORMALIZATION (MANDATORY)
+
+Before identifying any gaps, you MUST normalize and canonicalize both legacy and target rules:
+
+1. Normalize syntax and structure:
+
+   * Treat equivalent functions as the same (e.g., ROUND vs Math.Round)
+   * Normalize percentage formats (0.09 vs 9%)
+   * Ignore implementation-specific artifacts (file names, class names, UI labels)
+
+2. Normalize terminology:
+
+   * Map different variable names to same meaning (e.g., premium_base vs premiumAfterCoreRules)
+   * Standardize business terms (tax, discount, fee, validation, workflow, etc.)
+
+3. Extract and enrich each rule with:
+
+   * country (explicit or inferred)
+   * rule_type (tax, discount, fee, validation, workflow, compliance, etc.)
+   * business_intent (clear human-readable purpose of rule)
+   * calculation_pattern (percentage, fixed, conditional, tiered, etc.)
+
+4. Create a canonical identity for each rule:
+   (country + rule_type + business_intent + calculation_pattern)
+
+5. Dont identify any requirements for Spain as a Gap .. 
+---
+
+## SEMANTIC EQUIVALENCE LOGIC (CRITICAL)
+
+A rule MUST NOT be marked as a gap if:
+
+* Business intent is the same
+* Country context is the same
+* Calculation logic is materially equivalent
+
+Treat rules as EQUIVALENT if differences are only:
+
+* Syntax differences (ROUND vs Math.Round)
+* Representation differences (9% vs 0.09)
+* Structural/code differences
+* Naming differences
+
+Treat rules as DIFFERENT only if:
+
+* Formula materially differs (e.g., 9% vs 3.2%)
+* Conditions differ (e.g., applies to FAMILY vs INDIVIDUAL)
+* Thresholds differ
+* Sequencing differs
+* Exception handling differs
+* Override/config behavior differs
+
+---
+
+## COUNTRY-SPECIFIC MATCHING (MANDATORY)
+
+* Always match rules within the SAME country first
+* Do NOT compare rules across countries unless explicitly global
+
+Rules:
+
+* If a country-specific rule exists in both legacy and target:
+  → Assume implemented
+  → Only mark as gap if materially different
+
+* If country missing entirely in target:
+  → classify as missing_features
+
+---
+
+## GAP DETECTION DECISION LOGIC
+
+For each legacy rule:
+
+1. Find matching target rule using canonical identity
+2. If match found:
+
+   * Evaluate semantic equivalence:
+
+     * If equivalent → DO NOT report as gap
+     * If partially different → add to incorrect_implementations
+3. If no match found:
+
+   * Add to missing_features
+
+---
+
+## FALSE POSITIVE PREVENTION (HIGH PRIORITY)
+
+DO NOT report a gap if:
+
+* Equivalent rule exists in target
+* Only naming, formatting, or structural differences exist
+* Same logic implemented differently
+
+When uncertain:
+→ Prefer NOT marking as gap
+→ Instead classify as "equivalent with variation"
+
+---
+
+## GAP ANALYSIS FOCUS
+
+Compare across:
+
+* business capabilities
+* workflow and lifecycle handling
+* validations
+* calculations
+* discounts
+* risk logic
+* tax logic
+* reference data usage
+* compliance controls
+* auditability
+* persistence behavior
+* exception handling
+
+---
+
+## FIELD EXPECTATIONS
+
+missing_features:
+
+* Features present in legacy but NOT found in target after canonical matching
+
+incorrect_implementations:
+
+* Features present in both but materially different
+
+compliance_gaps:
+
+* Regulatory, consent, audit, privacy, residency gaps
+
+risks:
+
+* Each item should include:
+
+  * risk_name
+  * category
+  * severity
+  * description
+  * impacted_area
+  * likely_outcome
+  * mitigation_hint
+
+rule_comparison:
+
+* Array of objects with:
+
+  * rule_id
+  * rule_name
+  * category
+  * country
+  * legacy_status
+  * target_status
+  * equivalence_status ("equivalent", "partially_equivalent", "different", "missing")
+  * gap_type
+  * risk_level
+  * description
+  * evidence
+  * recommended_action
+  * confidence
+
+IMPORTANT:
+
+* Only "different" and "missing" should contribute to gaps
+
+common_rules_missed:
+
+* Only include rules truly missing or materially different
+* Include:
+
+  * rule_id
+  * rule_name
+  * legacy_formula_or_logic
+  * target_formula_or_logic
+  * gap_summary
+  * business_impact
+  * evidence
+  * recommended_action
+
+country_specific_rules_missed:
+
+* Same as above but MUST include country
+* DO NOT include if equivalent logic exists in target
+
+---
+
+## FORMULA HANDLING
+
+* Always include precise formula when available
+* If exact formula unavailable, provide best reconstructed logic
+* Avoid vague summaries
+
+---
+
+## RISK GUIDANCE
+
+Include risks such as:
+
+* regulatory exposure
+* premium leakage
+* claims leakage
+* operational defects
+* reconciliation issues
+* audit gaps
+
+---
+
+## QUALITY CONTROL
+
+Before finalizing output, validate:
+
+* No duplicate gaps for same rule
+* No country rules incorrectly marked as missing if present
+* No gaps based on syntax-only differences
+* All gaps are materially meaningful
+
+---
+
+## CONFIDENCE OBJECT
+
+confidence must include:
+
+* gap_confidence (High/Medium/Low)
+* coverage_of_analysis (percentage or qualitative)
+* notes (explain assumptions, uncertainties, normalization applied)
+
+---
 
 Payload:
 {payload}
